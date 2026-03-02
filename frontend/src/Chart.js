@@ -1,238 +1,143 @@
-// src/Chart.js
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useRef } from "react";
 import { createChart, CandlestickSeries } from "lightweight-charts";
 
-const Chart = ({ symbol, allData }) => {
-  const signal = allData?.[symbol]?.signal;
-  
+export default function Chart({
+  candles = [],
+  support = null,
+  resistance = null,
+  entry = null,
+  sl = null,
+  tp = null,
+}) {
+  const containerRef = useRef(null);
 
-let confidencePct = 0;
-
-
-if (signal) {
-  const raw = signal.confidence ?? 0;
-  confidencePct = raw <= 1 ? Math.round(raw * 100) : Math.round(raw);
-  
-}
-
-  const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const candleSeriesRef = useRef(null);
+  const priceLinesRef = useRef([]); // keep track of created lines so we can remove safely
 
-  // keep references to lines so we can remove them before redrawing
-  const supportLinesRef = useRef([]);
-  const resistanceLinesRef = useRef([]);
-  const entryLineRef = useRef(null);
-  const slLineRef = useRef(null);
-  const tpLineRef = useRef(null);
+  // 1) Create chart + series ONCE
+  useEffect(() => {
+    if (!containerRef.current) return;
 
- 
-
-  // chart options (memo so it doesn't recreate every render)
-  const chartOptions = useMemo(
-    () => ({
-      height: 320,
+    const chart = createChart(containerRef.current, {
+      width: containerRef.current.clientWidth,
+      height: 420,
       layout: {
-        background: { color: "#050914" },
-        textColor: "#ffffff",
+        background: { type: "solid", color: "#0f172a" },
+        textColor: "#cbd5e1",
       },
       grid: {
-        vertLines: { color: "#334158" },
-        horzLines: { color: "#334158" },
+        vertLines: { visible: false },
+        horzLines: { visible: false },
       },
-      rightPriceScale: { borderColor: "#334158" },
-      timeScale: { borderColor: "#334158" },
-    }),
-    []
-  );
-
-  // 1) Create chart once (or when chartOptions changes)
-  useEffect(() => {
-    if (!chartContainerRef.current) return;
-
-    const chart = createChart(chartContainerRef.current, {
-      width: chartContainerRef.current.clientWidth,
-      ...chartOptions,
+      rightPriceScale: { borderVisible: false },
+      timeScale: { borderVisible: false },
     });
 
-    // support both APIs depending on your lightweight-charts version
-    const candleSeries =
-      typeof chart.addCandlestickSeries === "function"
-        ? chart.addCandlestickSeries()
-        : chart.addSeries(CandlestickSeries);
-
     chartRef.current = chart;
-    candleSeriesRef.current = candleSeries;
 
-    const handleResize = () => {
-      if (!chartContainerRef.current) return;
-      chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+    // ✅ Compatibility: old vs new lightweight-charts API
+    let series;
+    if (typeof chart.addCandlestickSeries === "function") {
+      // OLD API (v3/v4)
+      series = chart.addCandlestickSeries();
+    } else if (typeof chart.addSeries === "function") {
+      // NEW API (v5+)
+      series = chart.addSeries(CandlestickSeries);
+    } else {
+      console.error("No supported candlestick series API found.");
+      return;
+    }
+
+    candleSeriesRef.current = series;
+
+    // handle resize
+    const onResize = () => {
+      if (!containerRef.current || !chartRef.current) return;
+      chartRef.current.applyOptions({ width: containerRef.current.clientWidth });
     };
-
-    window.addEventListener("resize", handleResize);
+    window.addEventListener("resize", onResize);
 
     return () => {
-      window.removeEventListener("resize", handleResize);
-      chart.remove();
-      chartRef.current = null;
-      candleSeriesRef.current = null;
-      supportLinesRef.current = [];
-      resistanceLinesRef.current = [];
+      window.removeEventListener("resize", onResize);
+      try {
+        chart.remove();
+      } catch {}
     };
-  }, [chartOptions]);
+  }, []);
 
-  // 2) Update candles when data changes
+  // 2) Update candles
   useEffect(() => {
-    if (!allData || !allData[symbol] || !candleSeriesRef.current) return;
+    const series = candleSeriesRef.current;
+    if (!series) return;
 
-    const data = allData[symbol];
-    const candles = Array.isArray(data.candles) ? data.candles : [];
+    const arr = Array.isArray(candles) ? candles : [];
 
-    if (candles.length === 0) return;
+    // Convert candle format safely:
+    const formatted = arr
+      .map((c) => ({
+        time: c.time ?? c.t, // must be unix seconds or business day object
+        open: Number(c.open ?? c.o),
+        high: Number(c.high ?? c.h),
+        low: Number(c.low ?? c.l),
+        close: Number(c.close ?? c.c),
+      }))
+      .filter(
+        (c) =>
+          c.time !== undefined &&
+          Number.isFinite(c.open) &&
+          Number.isFinite(c.high) &&
+          Number.isFinite(c.low) &&
+          Number.isFinite(c.close)
+      );
 
-    // Expecting candles like: { time, open, high, low, close }
-    // If your backend returns different keys, fix them here.
-    candleSeriesRef.current.setData(candles);
+    series.setData(formatted);
+  }, [candles]);
 
-    // If you store signals per symbol (example)
-  
-  }, [allData, symbol]);
-
-  // 3) Draw support/resistance lines when levels change
+  // 3) Update price lines (S/R/Entry/SL/TP)
   useEffect(() => {
-    if (!allData || !allData[symbol] || !candleSeriesRef.current) return;
+    const series = candleSeriesRef.current;
+    if (!series) return;
 
-    const data = allData[symbol];
-    const supports =
-      data?.levels?.supports ||
-      data?.supports ||
-      [];
-    const resistances =
-      data?.levels?.resistances ||
-      data?.resistances ||
-      [];
+    // remove old lines
+    for (const line of priceLinesRef.current) {
+      try {
+        series.removePriceLine(line);
+      } catch {}
+    }
+    priceLinesRef.current = [];
 
-  
+    const addLine = (price, label) => {
+      if (price === null || price === undefined) return;
+      const n = Number(price);
+      if (!Number.isFinite(n)) return;
 
-const candles = data.candles || [];
-if (!candles.length) return;
+      const line = series.createPriceLine({
+        price: n,
+        color: "#94a3b8",
+        lineWidth: 1,
+        title: label,
+      });
 
-const currentPrice = candles[candles.length - 1].close;
+      priceLinesRef.current.push(line);
+    };
 
-// Strongest support = highest support below current price
-const strongSupport = supports
-  .filter(p => p < currentPrice)
-  .sort((a, b) => b - a)[0];
+    addLine(support, "S");
+    addLine(resistance, "R");
+    addLine(entry, "ENTRY");
+    addLine(sl, "SL");
+    addLine(tp, "TP");
+  }, [support, resistance, entry, sl, tp]);
 
-// Strongest resistance = lowest resistance above current price
-const strongResistance = resistances
-  .filter(p => p > currentPrice)
-  .sort((a, b) => a - b)[0];
-
-// Remove old lines
-supportLinesRef.current.forEach(line => {
-  try { candleSeriesRef.current.removePriceLine(line); } catch {}
-});
-resistanceLinesRef.current.forEach(line => {
-  try { candleSeriesRef.current.removePriceLine(line); } catch {}
-});
-supportLinesRef.current = [];
-resistanceLinesRef.current = [];
-
-// Draw only ONE support
-if (strongSupport) {
-  const line = candleSeriesRef.current.createPriceLine({
-    price: strongSupport,
-    title: "Support",
-    lineWidth: 2,
-  });
-  supportLinesRef.current.push(line);
-}
-
-// Draw only ONE resistance
-if (strongResistance) {
-  const line = candleSeriesRef.current.createPriceLine({
-    price: strongResistance,
-    title: "Resistance",
-    lineWidth: 2,
-  });
-  resistanceLinesRef.current.push(line);
-}
-
-  }, [allData, symbol]);
-  
-  // 3C) Draw Entry / SL / TP lines when signal changes
-useEffect(() => {
-  if (!allData || !allData[symbol] || !candleSeriesRef.current) return;
-
-  const signal = allData[symbol]?.signal;
-  if (!signal) return;
-
-  const { entry, sl, tp } = signal;
-
-  // Remove old lines if they exist
-  if (entryLineRef.current) {
-    try { candleSeriesRef.current.removePriceLine(entryLineRef.current); } catch {}
-  }
-  if (slLineRef.current) {
-    try { candleSeriesRef.current.removePriceLine(slLineRef.current); } catch {}
-  }
-  if (tpLineRef.current) {
-    try { candleSeriesRef.current.removePriceLine(tpLineRef.current); } catch {}
-  }
-
-  // Entry line (blue)
-  entryLineRef.current = candleSeriesRef.current.createPriceLine({
-    price: Number(entry),
-    color: "#2196f3",
-    lineWidth: 2,
-    title: "Entry",
-  });
-
-  // Stop Loss (red)
-  slLineRef.current = candleSeriesRef.current.createPriceLine({
-    price: Number(sl),
-    color: "#f44336",
-    lineWidth: 2,
-    title: "SL",
-  });
-
-  // Take Profit (green)
-  tpLineRef.current = candleSeriesRef.current.createPriceLine({
-    price: Number(tp),
-    color: "#4caf50",
-    lineWidth: 2,
-    title: "TP",
-  });
-
-}, [allData, symbol]);
-return (
-  <div>
+  return (
     <div
-      ref={chartContainerRef}
-      style={{ width: "100%", height: "320px" }}
+      ref={containerRef}
+      style={{
+        width: "100%",
+        height: "420px",
+        borderRadius: "16px",
+        overflow: "hidden",
+      }}
     />
-  
-
-    {signal && (
-      <div style={{ marginTop: 12 }}>
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-          <div>Entry: <b>{signal.entry ?? "-"}</b></div>
-          <div>SL: <b>{signal.sl ?? "-"}</b></div>
-          <div>TP: <b>{signal.tp ?? "-"}</b></div>
-          <div>Direction: <b>{signal.direction ?? "-"}</b></div>
-          <div>Reason: <b>{signal.reason ?? "-"}</b></div>
-          <div>Confidence: <b>{confidencePct}%</b></div>
-        </div>
-
-        <div style={{ marginTop: 6 }}>
-          Reason: {signal.reason ?? "-"}
-        </div>
-      </div>
-    )}
-  </div>
-);
-};
-
-
-export default Chart;
+  );
+}

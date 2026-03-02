@@ -1,33 +1,94 @@
-// src/api.js
-const BACKEND_URL = "http://10.0.0.130:8000"; // Update with your backend URL
+// frontend/src/api.js
 
-// fetch one symbol
-export async function analyzeSymbol(symbol, timeframe) {
-  const res = await fetch(`${BACKEND_URL}/analyze_market/analyze`, {
+function deriveBackendBaseUrl() {
+  // BEST: set REACT_APP_BACKEND_URL in Codespaces env
+  // Fallback: convert frontend port domain -> backend port domain
+  const env = process.env.REACT_APP_BACKEND_URL;
+  if (env && typeof env === "string" && env.startsWith("http")) {
+    return env.replace(/\/$/, "");
+  }
+
+  const { protocol, hostname } = window.location;
+
+  // Example:
+  // frontend: probable-acorn-...-3005.app.github.dev
+  // backend:  probable-acorn-...-8000.app.github.dev
+  const backendHost = hostname.replace(
+    /-\d+\.app\.github\.dev$/,
+    "-8000.app.github.dev"
+  );
+
+  return `${protocol}//${backendHost}`;
+}
+
+const BACKEND = deriveBackendBaseUrl();
+
+async function readErrorText(res) {
+  try {
+    return await res.text();
+  } catch {
+    return "";
+  }
+}
+
+async function postJson(path, body) {
+  const url = `${BACKEND}${path}`;
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ symbol, timeframe }),
+    body: JSON.stringify(body ?? {}),
   });
 
   if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Backend error ${res.status}: ${txt}`);
+    const txt = await readErrorText(res);
+    throw new Error(
+      `${res.status} ${res.statusText} — ${txt || "Request failed"}`
+    );
   }
-
   return await res.json();
 }
 
-// fetch all symbols in parallel (shared dashboard call)
-export async function fetchAllVolatilityData(timeframe = "1m") {
-  const symbols = ["R_10", "R_25", "R_50", "R_75", "R_100"];
+async function getJson(path) {
+  const url = `${BACKEND}${path}`;
+  const res = await fetch(url, { method: "GET" });
 
-  const results = {};
-  await Promise.all(
-    symbols.map(async (symbol) => {
-      const data = await analyzeSymbol(symbol, timeframe);
-      results[symbol] = data;
-    })
-  );
+  if (!res.ok) {
+    const txt = await readErrorText(res);
+    throw new Error(
+      `${res.status} ${res.statusText} — ${txt || "Request failed"}`
+    );
+  }
+  return await res.json();
+}
 
-  return results; // { R_10: {candles, signal}, ... }
+// ✅ Analyze one market
+export async function analyzeMarket(symbol, timeframe) {
+  return postJson("/analyze_market/analyze", { symbol, timeframe });
+}
+
+// ✅ Scan multiple markets
+export async function scanMarkets(symbols, timeframe) {
+  return postJson("/analyze_market/scan", { symbols, timeframe });
+}
+
+// ✅ Trade history
+// Backend: GET /analyze_market/history?symbol=R_10&limit=50
+export async function fetchHistory({ symbol = "", limit = 50 } = {}) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 500));
+  const qs = new URLSearchParams();
+  if (symbol) qs.set("symbol", symbol);
+  qs.set("limit", String(safeLimit));
+  return getJson(`/analyze_market/history?${qs.toString()}`);
+}
+
+// ✅ Performance stats
+// Backend: GET /analyze_market/performance?last_n=30
+export async function fetchPerformance(lastN = 30) {
+  const safe = Math.max(1, Math.min(Number(lastN) || 30, 200));
+  return getJson(`/analyze_market/performance?last_n=${safe}`);
+}
+
+// Helper (optional)
+export function getBackendUrl() {
+  return BACKEND;
 }
