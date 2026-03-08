@@ -1,8 +1,6 @@
 // frontend/src/api.js
 
 function deriveBackendBaseUrl() {
-  // BEST: set REACT_APP_BACKEND_URL in Codespaces env
-  // Fallback: convert frontend port domain -> backend port domain
   const env = process.env.REACT_APP_BACKEND_URL;
   if (env && typeof env === "string" && env.startsWith("http")) {
     return env.replace(/\/$/, "");
@@ -10,9 +8,6 @@ function deriveBackendBaseUrl() {
 
   const { protocol, hostname } = window.location;
 
-  // Example:
-  // frontend: probable-acorn-...-3005.app.github.dev
-  // backend:  probable-acorn-...-8000.app.github.dev
   const backendHost = hostname.replace(
     /-\d+\.app\.github\.dev$/,
     "-8000.app.github.dev"
@@ -61,18 +56,19 @@ async function getJson(path) {
   return await res.json();
 }
 
-// ✅ Analyze one market
 export async function analyzeMarket(symbol, timeframe) {
   return postJson("/analyze_market/analyze", { symbol, timeframe });
 }
 
-// ✅ Scan multiple markets
 export async function scanMarkets(symbols, timeframe) {
   return postJson("/analyze_market/scan", { symbols, timeframe });
 }
 
-// ✅ Trade history
-// Backend: GET /analyze_market/history?symbol=R_10&limit=50
+export async function fetchLiveState(symbol, timeframe) {
+  const qs = new URLSearchParams({ symbol, timeframe });
+  return getJson(`/analyze_market/live?${qs.toString()}`);
+}
+
 export async function fetchHistory({ symbol = "", limit = 50 } = {}) {
   const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 500));
   const qs = new URLSearchParams();
@@ -81,14 +77,28 @@ export async function fetchHistory({ symbol = "", limit = 50 } = {}) {
   return getJson(`/analyze_market/history?${qs.toString()}`);
 }
 
-// ✅ Performance stats
-// Backend: GET /analyze_market/performance?last_n=30
 export async function fetchPerformance(lastN = 30) {
   const safe = Math.max(1, Math.min(Number(lastN) || 30, 200));
   return getJson(`/analyze_market/performance?last_n=${safe}`);
 }
 
-// Helper (optional)
 export function getBackendUrl() {
   return BACKEND;
+}
+
+export function getBackendWebSocketUrl() {
+  const env = process.env.REACT_APP_BACKEND_URL;
+  if (env && typeof env === "string" && env.startsWith("http")) {
+    return env.replace(/^http/, "ws").replace(/\/$/, "") + "/analyze_market/ws";
+  }
+
+  const { protocol, hostname } = window.location;
+  const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
+
+  const backendHost = hostname.replace(
+    /-\d+\.app\.github\.dev$/,
+    "-8000.app.github.dev"
+  );
+
+  return `${wsProtocol}//${backendHost}/analyze_market/ws`;
 }

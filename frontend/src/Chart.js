@@ -1,49 +1,94 @@
+// frontend/src/Chart.js
 import React, { useEffect, useRef } from "react";
 import { createChart, CandlestickSeries } from "lightweight-charts";
 
+function safeNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export default function Chart({
   candles = [],
-  support = null,
-  resistance = null,
+  supports = [],
+  resistances = [],
+  symbol = "R_10",
+  timeframe = "5m",
   entry = null,
   sl = null,
   tp = null,
+  tp1 = null,
+  tp2 = null,
 }) {
   const containerRef = useRef(null);
-
   const chartRef = useRef(null);
   const candleSeriesRef = useRef(null);
-  const priceLinesRef = useRef([]); // keep track of created lines so we can remove safely
+  const priceLinesRef = useRef([]);
 
-  // 1) Create chart + series ONCE
   useEffect(() => {
     if (!containerRef.current) return;
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: 420,
+      height: 460,
       layout: {
-        background: { type: "solid", color: "#0f172a" },
-        textColor: "#cbd5e1",
+        background: { type: "solid", color: "#06141d" },
+        textColor: "#d8f6ff",
+        attributionLogo: false,
       },
       grid: {
-        vertLines: { visible: false },
-        horzLines: { visible: false },
+        vertLines: { color: "rgba(0,255,208,0.08)" },
+        horzLines: { color: "rgba(0,255,208,0.08)" },
       },
-      rightPriceScale: { borderVisible: false },
-      timeScale: { borderVisible: false },
+      rightPriceScale: {
+        borderColor: "rgba(0,255,208,0.16)",
+        textColor: "#bfefff",
+      },
+      timeScale: {
+        borderColor: "rgba(0,255,208,0.16)",
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      crosshair: {
+        vertLine: {
+          color: "rgba(0,255,208,0.25)",
+          width: 1,
+          style: 0,
+          labelBackgroundColor: "#0f2e3a",
+        },
+        horzLine: {
+          color: "rgba(0,255,208,0.25)",
+          width: 1,
+          style: 0,
+          labelBackgroundColor: "#0f2e3a",
+        },
+      },
     });
 
     chartRef.current = chart;
 
-    // ✅ Compatibility: old vs new lightweight-charts API
     let series;
     if (typeof chart.addCandlestickSeries === "function") {
-      // OLD API (v3/v4)
-      series = chart.addCandlestickSeries();
+      series = chart.addCandlestickSeries({
+        upColor: "#2dffb4",
+        downColor: "#ff5f8a",
+        borderUpColor: "#2dffb4",
+        borderDownColor: "#ff5f8a",
+        wickUpColor: "#7dffd0",
+        wickDownColor: "#ff8cab",
+        priceLineVisible: false,
+        lastValueVisible: true,
+      });
     } else if (typeof chart.addSeries === "function") {
-      // NEW API (v5+)
-      series = chart.addSeries(CandlestickSeries);
+      series = chart.addSeries(CandlestickSeries, {
+        upColor: "#2dffb4",
+        downColor: "#ff5f8a",
+        borderUpColor: "#2dffb4",
+        borderDownColor: "#ff5f8a",
+        wickUpColor: "#7dffd0",
+        wickDownColor: "#ff8cab",
+        priceLineVisible: false,
+        lastValueVisible: true,
+      });
     } else {
       console.error("No supported candlestick series API found.");
       return;
@@ -51,11 +96,14 @@ export default function Chart({
 
     candleSeriesRef.current = series;
 
-    // handle resize
     const onResize = () => {
       if (!containerRef.current || !chartRef.current) return;
-      chartRef.current.applyOptions({ width: containerRef.current.clientWidth });
+      chartRef.current.applyOptions({
+        width: containerRef.current.clientWidth,
+      });
+      chartRef.current.timeScale().fitContent();
     };
+
     window.addEventListener("resize", onResize);
 
     return () => {
@@ -66,40 +114,44 @@ export default function Chart({
     };
   }, []);
 
-  // 2) Update candles
   useEffect(() => {
     const series = candleSeriesRef.current;
-    if (!series) return;
+    const chart = chartRef.current;
+    if (!series || !chart) return;
 
     const arr = Array.isArray(candles) ? candles : [];
 
-    // Convert candle format safely:
     const formatted = arr
       .map((c) => ({
-        time: c.time ?? c.t, // must be unix seconds or business day object
-        open: Number(c.open ?? c.o),
-        high: Number(c.high ?? c.h),
-        low: Number(c.low ?? c.l),
-        close: Number(c.close ?? c.c),
+        time:
+          c.time ??
+          c.epoch ??
+          c.t ??
+          null,
+        open: safeNumber(c.open ?? c.o),
+        high: safeNumber(c.high ?? c.h),
+        low: safeNumber(c.low ?? c.l),
+        close: safeNumber(c.close ?? c.c),
       }))
       .filter(
         (c) =>
-          c.time !== undefined &&
-          Number.isFinite(c.open) &&
-          Number.isFinite(c.high) &&
-          Number.isFinite(c.low) &&
-          Number.isFinite(c.close)
+          c.time !== null &&
+          c.open !== null &&
+          c.high !== null &&
+          c.low !== null &&
+          c.close !== null
       );
 
+    if (!formatted.length) return;
+
     series.setData(formatted);
+    chart.timeScale().fitContent();
   }, [candles]);
 
-  // 3) Update price lines (S/R/Entry/SL/TP)
   useEffect(() => {
     const series = candleSeriesRef.current;
     if (!series) return;
 
-    // remove old lines
     for (const line of priceLinesRef.current) {
       try {
         series.removePriceLine(line);
@@ -107,36 +159,46 @@ export default function Chart({
     }
     priceLinesRef.current = [];
 
-    const addLine = (price, label) => {
-      if (price === null || price === undefined) return;
-      const n = Number(price);
-      if (!Number.isFinite(n)) return;
+    const addLine = (price, title, color) => {
+      const n = safeNumber(price);
+      if (n === null) return;
 
-      const line = series.createPriceLine({
-        price: n,
-        color: "#94a3b8",
-        lineWidth: 1,
-        title: label,
-      });
-
-      priceLinesRef.current.push(line);
+      try {
+        const line = series.createPriceLine({
+          price: n,
+          color,
+          lineWidth: 2,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title,
+        });
+        priceLinesRef.current.push(line);
+      } catch {}
     };
 
-    addLine(support, "S");
-    addLine(resistance, "R");
-    addLine(entry, "ENTRY");
-    addLine(sl, "SL");
-    addLine(tp, "TP");
-  }, [support, resistance, entry, sl, tp]);
+    const supportList = Array.isArray(supports) ? supports : [];
+    const resistanceList = Array.isArray(resistances) ? resistances : [];
+
+    supportList.slice(0, 3).forEach((s, i) => addLine(s, `S${i + 1}`, "#1fd6ff"));
+    resistanceList.slice(0, 3).forEach((r, i) => addLine(r, `R${i + 1}`, "#ffd76a"));
+
+    addLine(entry, "ENTRY", "#2dffb4");
+    addLine(sl, "SL", "#ff5f8a");
+    addLine(tp, "TP", "#ffd76a");
+    addLine(tp1, "TP1", "#8affc1");
+    addLine(tp2, "TP2", "#ffe082");
+  }, [supports, resistances, entry, sl, tp, tp1, tp2]);
 
   return (
     <div
       ref={containerRef}
+      aria-label={`Chart for ${symbol} ${timeframe}`}
       style={{
         width: "100%",
-        height: "420px",
-        borderRadius: "16px",
+        height: "460px",
+        borderRadius: "18px",
         overflow: "hidden",
+        boxShadow: "inset 0 0 30px rgba(0,255,208,0.05)",
       }}
     />
   );
