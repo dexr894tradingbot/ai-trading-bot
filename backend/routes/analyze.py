@@ -1,68 +1,93 @@
-# backend/analyze.py
 from __future__ import annotations
 
 import os
 import time
 import uuid
+import asyncio
+import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from utils.deriv import fetch_deriv_candles
-
+from utils.telegram import send_telegram_message
 router = APIRouter()
 
+@router.get("/telegram-test")
+async def telegram_test():
+    ok = await send_telegram_message("Telegram test works")
+    return {"ok": ok}
+
+@router.get("/daily-report")
+async def daily_report() -> Dict[str, Any]:
+    ok = await send_telegram_message(build_daily_report_message())
+    return {"ok": ok}
+
+@router.get("/telegram-performance")
+async def telegram_performance() -> Dict[str, Any]:
+    ok = await send_telegram_message(build_daily_report_message())
+    return {"ok": ok}
+
+
+@router.get("/telegram-active")
+async def telegram_active() -> Dict[str, Any]:
+    if not ACTIVE_TRADES:
+        ok = await send_telegram_message("📭 No active trades right now.")
+        return {"ok": ok}
+
+    lines = ["📌 ACTIVE TRADES\n"]
+    for _, t in ACTIVE_TRADES.items():
+        lines.append(
+            f"{t.get('symbol')} {t.get('direction')} | "
+            f"Entry {t.get('entry')} | SL {t.get('sl')} | TP2 {t.get('tp2', t.get('tp'))}"
+        )
+    ok = await send_telegram_message("\n".join(lines))
+    return {"ok": ok}
+
 # =========================================================
-# CONFIG (UPGRADES + STABILITY + UI FIELDS)
-# - Weighted alignment bias: 30m + 1h + 4h
-# - Entry TF: 5m
-# - Lock signals into ACTIVE_TRADES until TP2/SL
-# - Return extra fields for UI: entry_type, bias_score/details, mode
+# CONFIG
 # =========================================================
 ENTRY_TF = "5m"
 
-# Weighted alignment timeframes
 ALIGN_TFS = ["30m", "1h", "4h"]
 ALIGN_WEIGHTS = {"30m": 0.25, "1h": 0.35, "4h": 0.40}
-ALIGN_MIN_SCORE = 0.60      # must be strong enough to trade
-ALIGN_MIN_MARGIN = 0.12     # buy_score and sell_score must not be too close
+ALIGN_MIN_SCORE = 0.60
+ALIGN_MIN_MARGIN = 0.12
 
 EMA_FAST = 20
 EMA_SLOW = 50
 EMA_ENTRY = 20
-
 ATR_PERIOD = 14
 
-# --- Regime filter
 USE_REGIME_FILTER = True
+USE_REGIME_CLASSIFIER = True
+REGIME_LOOKBACK = 60
+REGIME_TREND_EMA_GAP_MIN_ATR = 0.35
+REGIME_RANGE_ATR_RATIO_MAX = 0.85
+REGIME_CHAOS_CROSS_COUNT = 7
 EMA_CROSS_LOOKBACK = 45
 EMA_CROSS_MAX = 6
 ATR_COMP_LOOKBACK = 70
 ATR_COMP_RATIO_MIN = 0.65
 
-# --- Trend strength gate (per TF in bias calc)
 USE_CHOP_FILTER = True
 TREND_STRENGTH_MIN = 0.35
 
-# --- Rejection candle
 MIN_BODY_TO_RANGE = 0.30
 MIN_WICK_TO_RANGE = 0.25
 REJECTION_CLOSE_OUTSIDE_ZONE = True
 
-# --- Zones
 ZONE_LOOKBACK = 160
 ZONE_ATR_MULT = 0.25
 MIN_ZONE_TOUCHES = 2
 RETURN_TOP_ZONES = 8
 
-# --- BOS / Retest (Sniper path)
 BOS_LOOKBACK = 12
 RETEST_TOL_ATR = 0.35
 RETEST_MAX_CANDLES = 18
 
-# --- SL/TP logic
 SL_BUFFER_ATR = 0.20
 MAX_SL_ATR = 2.50
 
@@ -70,33 +95,72 @@ MIN_TP1_ATR = 0.8
 MIN_TP2_ATR = 1.5
 RR_FALLBACK_TP2 = 4.0
 
-# --- Trade management guidance
 BE_BUFFER_R = 0.10
 PARTIAL_TP_PERCENT = 0.5
 TRAIL_LOOKBACK = 12
 TRAIL_BUFFER_ATR = 0.20
 
-# --- Risk gates
-MAX_ACTIVE_TOTAL = 5                  # ✅ UPDATED (was 2)
+MAX_ACTIVE_TOTAL = 5
 DAILY_LOSS_LIMIT_R = -3.0
 COOLDOWN_MIN_AFTER_LOSS = 20
 MAX_SIGNALS_PER_DAY_PER_SYMBOL = 5
 
-# --- Hybrid mode
 ENABLE_FAST_ENTRY = True
 FAST_ENTRY_MIN_CONF = 70
 
-# --- Signal locking
 ENABLE_SIGNAL_LOCK = True
 MIN_LOCK_CONF = 70
 
-# --- History
 MAX_HISTORY = 500
 PERFORMANCE_REVIEW_N = 30
 
+USE_MARKET_QUALITY_FILTER = True
+BREAKOUT_BODY_MIN_RATIO = 0.35
+BREAKOUT_WICK_MAX_OPPOSITE_RATIO = 0.35
+BREAKOUT_RANGE_MIN_ATR = 0.55
+BREAKOUT_CLOSE_NEAR_EXTREME_RATIO = 0.35
+MAX_ENTRY_DISTANCE_FROM_EMA_ATR = 1.60
+MIN_TP2_R_MULT = 1.80
+
+# Volatility filter
+USE_VOLATILITY_FILTER = True
+VOL_ATR_LOOKBACK = 50
+VOL_MIN_RATIO = 0.6
+VOL_MAX_RATIO = 1.8
+
 # =========================================================
-# STATE (in-memory)
+# NEW UPGRADE CONFIG
 # =========================================================
+USE_STRUCTURE_FILTER = True
+STRUCTURE_LOOKBACK = 50
+STRUCTURE_PIVOT_LEFT = 2
+STRUCTURE_PIVOT_RIGHT = 2
+
+USE_LIQUIDITY_CLUSTER_FILTER = True
+LIQ_CLUSTER_LOOKBACK = 80
+LIQ_CLUSTER_TOL_ATR = 0.20
+LIQ_CLUSTER_MIN_TOUCHES = 3
+
+USE_SPIKE_FILTER = True
+SPIKE_LOOKBACK = 5
+SPIKE_MAX_ATR_MULT = 2.8
+USE_SWEEP_ENTRY_BONUS = True
+SWEEP_ENTRY_BONUS_POINTS = 6
+
+USE_TRAP_AVOIDANCE = True
+TRAP_AVOID_TOL_ATR = 0.25
+
+USE_LIQUIDITY_SWEEP = True
+SWEEP_LOOKBACK = 16
+SWEEP_CLOSEBACK_ATR = 0.10
+
+USE_FAKE_BREAKOUT_FILTER = True
+FAKE_BREAKOUT_LOOKBACK = 10
+FAKE_BREAKOUT_BACKINSIDE_ATR = 0.12
+
+LIVE_CACHE: Dict[str, Dict[str, Any]] = {}
+LIVE_CACHE_TTL_SEC = 2
+
 ACTIVE_TRADES: Dict[str, Dict[str, Any]] = {}
 PENDING_SETUPS: Dict[str, Dict[str, Any]] = {}
 TRADE_HISTORY: List[Dict[str, Any]] = []
@@ -107,6 +171,7 @@ RISK_STATE: Dict[str, Any] = {
     "signals_today": {},
     "cooldown_until": {},
 }
+
 
 # =========================================================
 # REQUEST MODELS
@@ -122,8 +187,107 @@ class ScanRequest(BaseModel):
 
 
 # =========================================================
-# HELPERS
+# BASIC HELPERS
 # =========================================================
+def classify_market_regime(candles: List[Dict[str, float]], atr_value: float) -> Dict[str, Any]:
+    if not USE_REGIME_CLASSIFIER:
+        return {"regime": "UNKNOWN", "reason": "regime_classifier_off"}
+
+    if len(candles) < REGIME_LOOKBACK or atr_value <= 0:
+        return {"regime": "UNKNOWN", "reason": "not_enough_regime_data"}
+
+    data = candles[-REGIME_LOOKBACK:]
+    closes = [safe_float(c["close"]) for c in data]
+
+    ema_fast = ema_last(closes, EMA_FAST)
+    ema_slow = ema_last(closes, EMA_SLOW)
+
+    if ema_fast is None or ema_slow is None:
+        return {"regime": "UNKNOWN", "reason": "ema_not_ready"}
+
+    ema_gap_atr = abs(float(ema_fast) - float(ema_slow)) / max(1e-9, atr_value)
+
+    atrs = atr_series_sma(data, ATR_PERIOD)
+    recent_atrs = [a for a in atrs if a is not None]
+    atr_ratio = 1.0
+    if len(recent_atrs) >= 10:
+        avg_atr = sum(recent_atrs) / len(recent_atrs)
+        if avg_atr > 0:
+            atr_ratio = atr_value / avg_atr
+
+    ema20_series = ema_series(closes, EMA_ENTRY)
+    cross_count = 0
+    for i in range(1, len(closes)):
+        if ema20_series[i] is None or ema20_series[i - 1] is None:
+            continue
+        prev_side = closes[i - 1] - float(ema20_series[i - 1])
+        cur_side = closes[i] - float(ema20_series[i])
+        if prev_side == 0:
+            continue
+        if (prev_side > 0 and cur_side < 0) or (prev_side < 0 and cur_side > 0):
+            cross_count += 1
+
+    if cross_count >= REGIME_CHAOS_CROSS_COUNT:
+        return {
+            "regime": "CHAOTIC",
+            "reason": f"too_many_crosses({cross_count})",
+            "ema_gap_atr": round(ema_gap_atr, 3),
+            "atr_ratio": round(atr_ratio, 3),
+        }
+
+    if ema_gap_atr >= REGIME_TREND_EMA_GAP_MIN_ATR and atr_ratio >= REGIME_RANGE_ATR_RATIO_MAX:
+        return {
+            "regime": "TRENDING",
+            "reason": "ema_gap_and_atr_support_trend",
+            "ema_gap_atr": round(ema_gap_atr, 3),
+            "atr_ratio": round(atr_ratio, 3),
+        }
+
+    return {
+        "regime": "RANGING",
+        "reason": "no_clean_trend_detected",
+        "ema_gap_atr": round(ema_gap_atr, 3),
+        "atr_ratio": round(atr_ratio, 3),
+    }
+
+def regime_allows_trade(direction: str, regime_info: Dict[str, Any]) -> Dict[str, Any]:
+    regime = regime_info.get("regime", "UNKNOWN")
+
+    if regime == "CHAOTIC":
+        return {"ok": False, "reason": "chaotic_market_blocked"}
+
+    if regime == "UNKNOWN":
+        return {"ok": True, "reason": "unknown_regime_allowed"}
+
+    if regime in ("TRENDING", "RANGING"):
+        return {"ok": True, "reason": f"{regime.lower()}_allowed"}
+
+    return {"ok": True, "reason": "default_allowed"}
+
+def spike_filter_ok(candles: List[Dict[str, float]], atr_value: float) -> Dict[str, Any]:
+
+    if not USE_SPIKE_FILTER:
+        return {"ok": True, "reason": "spike_filter_off"}
+
+    if len(candles) < SPIKE_LOOKBACK:
+        return {"ok": True, "reason": "not_enough_data"}
+
+    recent = candles[-SPIKE_LOOKBACK:]
+
+    for c in recent:
+        high = float(c["high"])
+        low = float(c["low"])
+
+        candle_range = abs(high - low)
+
+        if candle_range > atr_value * SPIKE_MAX_ATR_MULT:
+            return {
+                "ok": False,
+                "reason": f"spike_detected ({round(candle_range,2)})"
+            }
+
+    return {"ok": True, "reason": "no_spike"}
+
 def _today_key() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
@@ -167,6 +331,156 @@ def safe_float(x: Any, fallback: float = 0.0) -> float:
     except Exception:
         return fallback
 
+
+def _live_cache_key(symbol: str, timeframe: str, count: int) -> str:
+    return f"{symbol}:{timeframe}:{count}"
+
+
+async def _cached_fetch_candles(app_id: str, symbol: str, timeframe: str, count: int) -> List[Dict[str, Any]]:
+    key = _live_cache_key(symbol, timeframe, count)
+    now = time.time()
+    cached = LIVE_CACHE.get(key)
+
+    if cached and (now - float(cached.get("ts", 0))) < LIVE_CACHE_TTL_SEC:
+        return cached.get("candles") or []
+
+    candles = await fetch_deriv_candles(
+        app_id=app_id,
+        symbol=symbol,
+        timeframe=timeframe,
+        count=count,
+    )
+
+    LIVE_CACHE[key] = {
+        "ts": now,
+        "candles": candles or [],
+    }
+    return candles or []
+
+
+def score_to_grade(score_1_10: int) -> str:
+    s = int(max(0, min(10, score_1_10)))
+    if s >= 8:
+        return "PREMIUM"
+    if s >= 7:
+        return "STRONG"
+    if s >= 6:
+        return "GOOD"
+    if s >= 5:
+        return "WATCH"
+    return "IGNORE"
+
+
+def trade_progress_percent(direction: str, entry: float, sl: float, tp2: float, current_price: float) -> float:
+    if direction == "BUY":
+        total = tp2 - entry
+        if total <= 0:
+            return 0.0
+        return ((current_price - entry) / total) * 100.0
+    if direction == "SELL":
+        total = entry - tp2
+        if total <= 0:
+            return 0.0
+        return ((entry - current_price) / total) * 100.0
+    return 0.0
+
+def volatility_ok(candles: List[Dict[str, float]], atr_value: float) -> Dict[str, Any]:
+    if not USE_VOLATILITY_FILTER:
+        return {"ok": True, "reason": "vol_filter_off"}
+
+    if len(candles) < VOL_ATR_LOOKBACK or atr_value <= 0:
+        return {"ok": True, "reason": "not_enough_data"}
+
+    atrs = atr_series_sma(candles, ATR_PERIOD)
+    recent = [a for a in atrs[-VOL_ATR_LOOKBACK:] if a is not None]
+
+    if len(recent) < 10:
+        return {"ok": True, "reason": "not_enough_atr"}
+
+    avg_atr = sum(recent) / len(recent)
+    ratio = atr_value / avg_atr if avg_atr > 0 else 1.0
+
+    if ratio < VOL_MIN_RATIO:
+        return {"ok": False, "reason": f"volatility_too_low ({ratio:.2f})"}
+
+    if ratio > VOL_MAX_RATIO:
+        return {"ok": False, "reason": f"volatility_too_high ({ratio:.2f})"}
+
+    return {"ok": True, "reason": "volatility_ok"}
+
+def build_signal_message(symbol: str, timeframe: str, signal: Dict[str, Any]) -> str:
+    direction = signal.get("direction", "-")
+    confidence = signal.get("confidence", 0)
+    score = signal.get("score_1_10", 0)
+    grade = signal.get("grade", "-")
+    entry = signal.get("entry", "-")
+    sl = signal.get("sl", "-")
+    tp1 = signal.get("tp1", "-")
+    tp2 = signal.get("tp2", signal.get("tp", "-"))
+    mode = signal.get("entry_type") or signal.get("mode") or "-"
+    r_mult = signal.get("r_multiple", "-")
+
+    arrow = "🟢 BUY" if direction == "BUY" else "🔴 SELL"
+
+    return (
+        f"🚨 DEXTRADEZ BOT SIGNAL 🚨\n\n"
+        f"{arrow} {symbol}\n"
+        f"Timeframe: {timeframe}\n"
+        f"Mode: {mode}\n\n"
+        f"Entry: {entry}\n"
+        f"Stop Loss: {sl}\n"
+        f"TP1: {tp1}\n"
+        f"TP2: {tp2}\n\n"
+        f"Confidence: {confidence}%\n"
+        f"Setup Score: {score}/10 ({grade})\n"
+        f"R:R: {r_mult}\n\n"
+        f"⚡ Generated by DEXTRADEZ AI"
+    )
+
+
+def build_tp1_message(symbol: str, timeframe: str, trade: Dict[str, Any]) -> str:
+    return (
+        f"🎯 TP1 HIT\n\n"
+        f"Symbol: {symbol}\n"
+        f"Timeframe: {timeframe}\n"
+        f"Direction: {trade.get('direction', '-')}\n"
+        f"Mode: {trade.get('entry_type') or trade.get('mode') or '-'}\n\n"
+        f"Entry: {trade.get('entry', '-')}\n"
+        f"TP1: {trade.get('tp1', '-')}\n"
+        f"TP2: {trade.get('tp2', trade.get('tp', '-'))}\n\n"
+        f"✅ Partial profit taken\n"
+        f"🔒 Stop moved to protection zone"
+    )
+
+
+def build_closed_message(symbol: str, timeframe: str, trade: Dict[str, Any], outcome: str, price: float) -> str:
+    emoji = "🏆" if outcome == "TP2" else "🛑"
+    return (
+        f"{emoji} TRADE CLOSED\n\n"
+        f"Symbol: {symbol}\n"
+        f"Timeframe: {timeframe}\n"
+        f"Direction: {trade.get('direction', '-')}\n"
+        f"Outcome: {outcome}\n"
+        f"Close Price: {round(price, 5)}\n\n"
+        f"Entry: {trade.get('entry', '-')}\n"
+        f"SL: {trade.get('sl', '-')}\n"
+        f"TP2: {trade.get('tp2', trade.get('tp', '-'))}\n"
+        f"R: {trade.get('r_multiple', '-')}\n\n"
+        f"📊 DEXTRADEZ BOT result logged"
+    )
+def build_daily_report_message() -> str:
+    perf = _performance(PERFORMANCE_REVIEW_N)
+    return (
+        f"📈 DEXTRADEZ DAILY REPORT\n\n"
+        f"Daily R: {round(float(RISK_STATE.get('daily_R', 0.0)), 2)}\n"
+        f"Active Trades: {_active_total()}/{MAX_ACTIVE_TOTAL}\n"
+        f"Closed Trades Reviewed: {perf.get('total_closed', 0)}\n"
+        f"Wins: {perf.get('wins', 0)}\n"
+        f"Losses: {perf.get('losses', 0)}\n"
+        f"Win Rate: {perf.get('win_rate', 0)}%\n"
+        f"Avg R: {perf.get('avg_R', 0)}\n"
+        f"Total R: {perf.get('total_R', 0)}"
+    )
 
 # =========================================================
 # INDICATORS
@@ -256,13 +570,195 @@ def candle_wick_ratio(c: Dict[str, float], direction: str) -> float:
 
 
 def recent_swing_low(candles: List[Dict[str, float]], lookback: int = 20) -> float:
-    data = candles[-lookback:]
-    return min(safe_float(c["low"]) for c in data)
+    return min(safe_float(c["low"]) for c in candles[-lookback:])
 
 
 def recent_swing_high(candles: List[Dict[str, float]], lookback: int = 20) -> float:
-    data = candles[-lookback:]
-    return max(safe_float(c["high"]) for c in data)
+    return max(safe_float(c["high"]) for c in candles[-lookback:])
+
+
+def recent_avg_body(candles: List[Dict[str, float]], lookback: int = 12) -> float:
+    data = candles[-lookback:] if len(candles) >= lookback else candles
+    if not data:
+        return 0.0
+    vals = [abs(safe_float(c["close"]) - safe_float(c["open"])) for c in data]
+    return sum(vals) / max(1, len(vals))
+
+
+def close_near_extreme_ratio(c: Dict[str, float], direction: str) -> float:
+    h = safe_float(c["high"])
+    l = safe_float(c["low"])
+    cl = safe_float(c["close"])
+    rng = max(1e-9, h - l)
+    if direction == "BUY":
+        return max(0.0, (h - cl) / rng)
+    return max(0.0, (cl - l) / rng)
+
+
+def opposite_wick_ratio(c: Dict[str, float], direction: str) -> float:
+    o = safe_float(c["open"])
+    cl = safe_float(c["close"])
+    h = safe_float(c["high"])
+    l = safe_float(c["low"])
+    rng = max(1e-9, h - l)
+    if direction == "BUY":
+        upper = h - max(o, cl)
+        return max(0.0, upper / rng)
+    lower = min(o, cl) - l
+    return max(0.0, lower / rng)
+
+
+# =========================================================
+# STRUCTURE / SWEEPS / FAKE BREAKOUTS
+# =========================================================
+def _pivot_high_values(
+    candles: List[Dict[str, float]],
+    pivot_left: int = STRUCTURE_PIVOT_LEFT,
+    pivot_right: int = STRUCTURE_PIVOT_RIGHT,
+) -> List[float]:
+    highs = [safe_float(c["high"]) for c in candles]
+    vals: List[float] = []
+    for i in range(pivot_left, len(candles) - pivot_right):
+        w = highs[i - pivot_left : i + pivot_right + 1]
+        if highs[i] == max(w):
+            vals.append(highs[i])
+    return vals
+
+
+def _pivot_low_values(
+    candles: List[Dict[str, float]],
+    pivot_left: int = STRUCTURE_PIVOT_LEFT,
+    pivot_right: int = STRUCTURE_PIVOT_RIGHT,
+) -> List[float]:
+    lows = [safe_float(c["low"]) for c in candles]
+    vals: List[float] = []
+    for i in range(pivot_left, len(candles) - pivot_right):
+        w = lows[i - pivot_left : i + pivot_right + 1]
+        if lows[i] == min(w):
+            vals.append(lows[i])
+    return vals
+
+
+def market_structure_state(candles: List[Dict[str, float]]) -> Dict[str, Any]:
+    if len(candles) < max(STRUCTURE_LOOKBACK, 20):
+        return {"direction": "NEUTRAL", "reason": "not_enough_structure_data"}
+
+    data = candles[-STRUCTURE_LOOKBACK:]
+    highs = _pivot_high_values(data)
+    lows = _pivot_low_values(data)
+
+    if len(highs) < 2 or len(lows) < 2:
+        return {"direction": "NEUTRAL", "reason": "not_enough_pivots"}
+
+    h1, h2 = highs[-2], highs[-1]
+    l1, l2 = lows[-2], lows[-1]
+
+    if h2 > h1 and l2 > l1:
+        return {
+            "direction": "BUY",
+            "reason": "HH_HL_structure",
+            "last_high_1": round(h1, 5),
+            "last_high_2": round(h2, 5),
+            "last_low_1": round(l1, 5),
+            "last_low_2": round(l2, 5),
+        }
+
+    if h2 < h1 and l2 < l1:
+        return {
+            "direction": "SELL",
+            "reason": "LH_LL_structure",
+            "last_high_1": round(h1, 5),
+            "last_high_2": round(h2, 5),
+            "last_low_1": round(l1, 5),
+            "last_low_2": round(l2, 5),
+        }
+
+    return {
+        "direction": "NEUTRAL",
+        "reason": "mixed_structure",
+        "last_high_1": round(h1, 5),
+        "last_high_2": round(h2, 5),
+        "last_low_1": round(l1, 5),
+        "last_low_2": round(l2, 5),
+    }
+
+
+def liquidity_sweep_info(candles: List[Dict[str, float]], atr_value: float) -> Dict[str, Any]:
+    if not USE_LIQUIDITY_SWEEP:
+        return {"type": "NONE", "reason": "sweep_filter_off"}
+
+    if len(candles) < SWEEP_LOOKBACK + 2 or atr_value <= 0:
+        return {"type": "NONE", "reason": "not_enough_sweep_data"}
+
+    last = candles[-1]
+    recent = candles[-(SWEEP_LOOKBACK + 1) : -1]
+
+    prev_high = max(safe_float(c["high"]) for c in recent)
+    prev_low = min(safe_float(c["low"]) for c in recent)
+
+    last_high = safe_float(last["high"])
+    last_low = safe_float(last["low"])
+    last_close = safe_float(last["close"])
+
+    if last_low < prev_low and last_close >= prev_low + atr_value * SWEEP_CLOSEBACK_ATR:
+        return {
+            "type": "BULLISH_SWEEP",
+            "level": round(prev_low, 5),
+            "reason": "swept_lows_closed_back_above",
+        }
+
+    if last_high > prev_high and last_close <= prev_high - atr_value * SWEEP_CLOSEBACK_ATR:
+        return {
+            "type": "BEARISH_SWEEP",
+            "level": round(prev_high, 5),
+            "reason": "swept_highs_closed_back_below",
+        }
+
+    return {"type": "NONE", "reason": "no_sweep"}
+
+
+def fake_breakout_block(candles: List[Dict[str, float]], direction: str, atr_value: float) -> Dict[str, Any]:
+    if not USE_FAKE_BREAKOUT_FILTER:
+        return {"ok": True, "reason": "fake_breakout_filter_off"}
+
+    if len(candles) < FAKE_BREAKOUT_LOOKBACK + 2 or atr_value <= 0:
+        return {"ok": True, "reason": "not_enough_fake_breakout_data"}
+
+    last = candles[-1]
+    recent = candles[-(FAKE_BREAKOUT_LOOKBACK + 1) : -1]
+
+    recent_high = max(safe_float(c["high"]) for c in recent)
+    recent_low = min(safe_float(c["low"]) for c in recent)
+    close_ = safe_float(last["close"])
+
+    if direction == "BUY":
+        broke = safe_float(last["high"]) > recent_high
+        back_inside = close_ < recent_high - atr_value * FAKE_BREAKOUT_BACKINSIDE_ATR
+        weak_body = candle_body_ratio(last) < BREAKOUT_BODY_MIN_RATIO
+        if broke and (back_inside or weak_body):
+            return {"ok": False, "reason": "fake_breakout_buy"}
+        return {"ok": True, "reason": "breakout_ok_buy"}
+
+    if direction == "SELL":
+        broke = safe_float(last["low"]) < recent_low
+        back_inside = close_ > recent_low + atr_value * FAKE_BREAKOUT_BACKINSIDE_ATR
+        weak_body = candle_body_ratio(last) < BREAKOUT_BODY_MIN_RATIO
+        if broke and (back_inside or weak_body):
+            return {"ok": False, "reason": "fake_breakout_sell"}
+        return {"ok": True, "reason": "breakout_ok_sell"}
+
+    return {"ok": True, "reason": "no_direction"}
+
+
+def structure_matches(direction: str, structure: Dict[str, Any], sweep: Dict[str, Any]) -> bool:
+    sdir = structure.get("direction", "NEUTRAL")
+    stype = sweep.get("type", "NONE")
+
+    if direction == "BUY":
+        return sdir in ("BUY", "NEUTRAL") or stype == "BULLISH_SWEEP"
+    if direction == "SELL":
+        return sdir in ("SELL", "NEUTRAL") or stype == "BEARISH_SWEEP"
+    return False
 
 
 # =========================================================
@@ -372,8 +868,8 @@ def regime_ok(candles_5m: List[Dict[str, float]]) -> Dict[str, Any]:
     ema20 = ema_series(closes, EMA_ENTRY)
 
     crosses = 0
-    look = EMA_CROSS_LOOKBACK
-    start = len(candles_5m) - look
+    start = len(candles_5m) - EMA_CROSS_LOOKBACK
+
     for i in range(start + 1, len(candles_5m)):
         if ema20[i] is None or ema20[i - 1] is None:
             continue
@@ -385,7 +881,7 @@ def regime_ok(candles_5m: List[Dict[str, float]]) -> Dict[str, Any]:
             crosses += 1
 
     if crosses > EMA_CROSS_MAX:
-        return {"ok": False, "reason": f"regime_block_chop (ema_crosses={crosses})", "ema_crosses": crosses}
+        return {"ok": False, "reason": f"regime_block_chop (ema_crosses={crosses})"}
 
     atrs = atr_series_sma(candles_5m, ATR_PERIOD)
     recent_atrs = [a for a in atrs[-ATR_COMP_LOOKBACK:] if a is not None]
@@ -393,22 +889,15 @@ def regime_ok(candles_5m: List[Dict[str, float]]) -> Dict[str, Any]:
         cur_atr = float(recent_atrs[-1])
         avg_atr = sum(recent_atrs) / len(recent_atrs)
         if avg_atr > 0 and (cur_atr / avg_atr) < ATR_COMP_RATIO_MIN:
-            return {
-                "ok": False,
-                "reason": f"regime_block_compress (atr_ratio={cur_atr/avg_atr:.2f})",
-                "atr_ratio": round(cur_atr / avg_atr, 3),
-            }
+            return {"ok": False, "reason": f"regime_block_compress (atr_ratio={cur_atr/avg_atr:.2f})"}
 
     return {"ok": True, "reason": "regime_ok"}
 
 
 # =========================================================
-# WEIGHTED ALIGNMENT BIAS (30m/1h/4h)
+# WEIGHTED ALIGNMENT
 # =========================================================
 def _tf_bias(candles: List[Dict[str, float]]) -> Dict[str, Any]:
-    """
-    Bias = EMA20 vs EMA50. Strength = abs(ema20-ema50)/ATR.
-    """
     if len(candles) < 120:
         return {"direction": "HOLD", "reason": "Not enough data", "meta": {"trend_strength": 0.0}}
 
@@ -428,11 +917,7 @@ def _tf_bias(candles: List[Dict[str, float]]) -> Dict[str, Any]:
     ts = abs(ema20 - ema50) / max(1e-9, a)
 
     if USE_CHOP_FILTER and ts < TREND_STRENGTH_MIN:
-        return {
-            "direction": "HOLD",
-            "reason": f"Choppy (trend_strength {ts:.2f})",
-            "meta": {"trend_strength": round(ts, 3), "atr": round(a, 6)},
-        }
+        return {"direction": "HOLD", "reason": f"Choppy (trend_strength {ts:.2f})", "meta": {"trend_strength": round(ts, 3)}}
 
     return {"direction": bias, "reason": f"{bias} bias ok", "meta": {"trend_strength": round(ts, 3)}}
 
@@ -448,7 +933,7 @@ def weighted_alignment(candles_by_tf: Dict[str, List[Dict[str, float]]]) -> Dict
         b = _tf_bias(cs)
         d = b.get("direction", "HOLD")
         ts = float((b.get("meta") or {}).get("trend_strength") or 0.0)
-        ts01 = min(1.0, max(0.0, ts / 1.0))  # normalize
+        ts01 = min(1.0, max(0.0, ts / 1.0))
 
         if d == "BUY":
             buy_score += w * ts01
@@ -485,7 +970,7 @@ def weighted_alignment(candles_by_tf: Dict[str, List[Dict[str, float]]]) -> Dict
             "sell": round(sell_score, 3),
             "margin": round(margin, 3),
             "details": details,
-            "reason": "Alignment unclear (too close)",
+            "reason": "Alignment unclear",
         }
 
     return {
@@ -555,7 +1040,7 @@ def rejection_ok(last: Dict[str, float], direction: str, zone: Dict[str, float])
 
 
 # =========================================================
-# TP TARGETS
+# TARGETS
 # =========================================================
 def pick_tp1_tp2(direction: str, entry: float, atr_5m: float, zones: Dict[str, Any], risk: float) -> Dict[str, Optional[float]]:
     min_tp1 = atr_5m * MIN_TP1_ATR
@@ -567,7 +1052,6 @@ def pick_tp1_tp2(direction: str, entry: float, atr_5m: float, zones: Dict[str, A
     if direction == "BUY":
         res_list = zones.get("resistance_zones") or []
 
-        # TP1 = nearest resistance EDGE above entry
         best_dist = None
         for rz in res_list:
             low = safe_float(rz["low"])
@@ -582,7 +1066,6 @@ def pick_tp1_tp2(direction: str, entry: float, atr_5m: float, zones: Dict[str, A
                 best_dist = dist
                 tp1 = cand
 
-        # TP2 = next resistance MID above entry
         best2_dist = None
         for rz in res_list:
             mid = safe_float(rz["mid"])
@@ -642,7 +1125,64 @@ def _calc_r_multiple(direction: str, entry: float, sl: float, tp: float) -> floa
 
 
 # =========================================================
-# CONFIDENCE (includes alignment score)
+# QUALITY
+# =========================================================
+def market_quality_ok(
+    candles_5m: List[Dict[str, float]],
+    direction: str,
+    atr_5m: float,
+    entry: float,
+    tp2: float,
+    sl: float,
+) -> Dict[str, Any]:
+    if not USE_MARKET_QUALITY_FILTER:
+        return {"ok": True, "reason": "market_quality_filter_off"}
+
+    if len(candles_5m) < 25 or atr_5m <= 0:
+        return {"ok": True, "reason": "market_quality_not_enough_data"}
+
+    last = candles_5m[-1]
+    closes = [safe_float(c["close"]) for c in candles_5m]
+    ema20 = ema_last(closes, EMA_ENTRY)
+    if ema20 is None:
+        return {"ok": True, "reason": "market_quality_no_ema"}
+
+    body_ratio = candle_body_ratio(last)
+    opp_wick = opposite_wick_ratio(last, direction)
+    last_range = max(1e-9, safe_float(last["high"]) - safe_float(last["low"]))
+    range_atr = last_range / max(1e-9, atr_5m)
+    near_extreme = close_near_extreme_ratio(last, direction)
+    avg_body = recent_avg_body(candles_5m[:-1], 12)
+    cur_body = abs(safe_float(last["close"]) - safe_float(last["open"]))
+    body_vs_recent = (cur_body / max(1e-9, avg_body)) if avg_body > 0 else 1.0
+    entry_dist_atr = abs(entry - float(ema20)) / max(1e-9, atr_5m)
+    r_mult = _calc_r_multiple(direction, entry, sl, tp2)
+
+    reasons = []
+
+    if body_ratio < BREAKOUT_BODY_MIN_RATIO:
+        reasons.append(f"weak_body({body_ratio:.2f})")
+    if opp_wick > BREAKOUT_WICK_MAX_OPPOSITE_RATIO:
+        reasons.append(f"opposite_wick_too_big({opp_wick:.2f})")
+    if range_atr < BREAKOUT_RANGE_MIN_ATR:
+        reasons.append(f"small_range_vs_atr({range_atr:.2f})")
+    if near_extreme > BREAKOUT_CLOSE_NEAR_EXTREME_RATIO:
+        reasons.append(f"close_not_near_extreme({near_extreme:.2f})")
+    if body_vs_recent < 0.90:
+        reasons.append(f"body_weaker_than_recent({body_vs_recent:.2f})")
+    if entry_dist_atr > MAX_ENTRY_DISTANCE_FROM_EMA_ATR:
+        reasons.append(f"stretched_from_ema({entry_dist_atr:.2f})")
+    if r_mult < MIN_TP2_R_MULT:
+        reasons.append(f"tp2_rr_too_low({r_mult:.2f})")
+
+    return {
+        "ok": len(reasons) == 0,
+        "reason": "market_quality_ok" if len(reasons) == 0 else "; ".join(reasons),
+    }
+
+
+# =========================================================
+# SCORING
 # =========================================================
 def confidence_score(
     align_score: float,
@@ -652,13 +1192,13 @@ def confidence_score(
     tp1: Optional[float],
     entry: float,
     atr_5m: float,
+    structure_bonus: int = 0,
+    sweep_bonus: int = 0,
 ) -> int:
     pts = 0.0
 
-    # alignment contributes up to 35
     pts += max(0.0, min(35.0, float(align_score) * 35.0))
 
-    # zone touches up to 20
     if zone_touches >= 4:
         pts += 20
     elif zone_touches == 3:
@@ -668,19 +1208,174 @@ def confidence_score(
     else:
         pts += 6
 
-    # rejection up to 20
     pts += 20 if rej_ok else 0
-
-    # BOS up to 15
     pts += 15 if bos_ok else 6
 
-    # TP1 meaningful up to 5
     if tp1 is not None:
         dist = abs(tp1 - entry)
         pts += 5 if dist >= atr_5m * MIN_TP1_ATR else 2
 
-    return int(max(0, min(95, round(pts))))
+    pts += structure_bonus
+    pts += sweep_bonus
 
+    return int(max(0, min(98, round(pts))))
+
+
+def setup_rank_1_10(
+    confidence: int,
+    bos_ok: bool,
+    rej_ok: bool,
+    align_score: float,
+    market_quality_ok_flag: bool,
+    structure_match: bool,
+    sweep_type: str,
+    fake_breakout_ok: bool,
+) -> int:
+    rank = 3
+    if confidence >= 55:
+        rank = 5
+    if confidence >= 65:
+        rank = 6
+    if confidence >= 75:
+        rank = 7
+    if confidence >= 82:
+        rank = 8
+    if confidence >= 90:
+        rank = 9
+
+    if bos_ok:
+        rank = max(rank, 7)
+    if rej_ok:
+        rank = min(10, rank + 1)
+    if align_score >= 0.80:
+        rank = min(10, rank + 1)
+    if structure_match:
+        rank = min(10, rank + 1)
+    if sweep_type in ("BULLISH_SWEEP", "BEARISH_SWEEP"):
+        rank = min(10, rank + 1)
+
+    if not fake_breakout_ok:
+        rank = min(rank, 4)
+    if not market_quality_ok_flag:
+        rank = min(rank, 4)
+
+    return max(1, min(10, rank))
+
+def detect_liquidity_clusters(candles: List[Dict[str, float]], atr_value: float) -> Dict[str, Any]:
+    if not USE_LIQUIDITY_CLUSTER_FILTER:
+        return {
+            "high_clusters": [],
+            "low_clusters": [],
+            "nearest_high_cluster": None,
+            "nearest_low_cluster": None,
+        }
+
+    if len(candles) < LIQ_CLUSTER_LOOKBACK or atr_value <= 0:
+        return {
+            "high_clusters": [],
+            "low_clusters": [],
+            "nearest_high_cluster": None,
+            "nearest_low_cluster": None,
+        }
+
+    data = candles[-LIQ_CLUSTER_LOOKBACK:]
+    tol = max(1e-9, atr_value * LIQ_CLUSTER_TOL_ATR)
+
+    highs = sorted(safe_float(c["high"]) for c in data)
+    lows = sorted(safe_float(c["low"]) for c in data)
+
+    def cluster_levels(levels: List[float]) -> List[Dict[str, Any]]:
+        if not levels:
+            return []
+        groups: List[List[float]] = []
+        cur = [levels[0]]
+        for p in levels[1:]:
+            if abs(p - cur[-1]) <= tol:
+                cur.append(p)
+            else:
+                groups.append(cur)
+                cur = [p]
+        groups.append(cur)
+
+        out: List[Dict[str, Any]] = []
+        for g in groups:
+            if len(g) >= LIQ_CLUSTER_MIN_TOUCHES:
+                out.append({
+                    "level": round(sum(g) / len(g), 5),
+                    "touches": len(g),
+                    "low": round(min(g), 5),
+                    "high": round(max(g), 5),
+                })
+        return out
+
+    high_clusters = cluster_levels(highs)
+    low_clusters = cluster_levels(lows)
+
+    last_close = safe_float(data[-1]["close"])
+
+    nearest_high = None
+    nearest_low = None
+
+    above = [c for c in high_clusters if c["level"] >= last_close]
+    below = [c for c in low_clusters if c["level"] <= last_close]
+
+    if above:
+        nearest_high = min(above, key=lambda x: abs(x["level"] - last_close))
+    if below:
+        nearest_low = min(below, key=lambda x: abs(x["level"] - last_close))
+
+    return {
+        "high_clusters": high_clusters,
+        "low_clusters": low_clusters,
+        "nearest_high_cluster": nearest_high,
+        "nearest_low_cluster": nearest_low,
+    }
+
+
+def trap_avoidance_ok(
+    direction: str,
+    entry: float,
+    atr_value: float,
+    liq: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not USE_TRAP_AVOIDANCE:
+        return {"ok": True, "reason": "trap_avoidance_off"}
+
+    tol = atr_value * TRAP_AVOID_TOL_ATR
+
+    nearest_high = liq.get("nearest_high_cluster")
+    nearest_low = liq.get("nearest_low_cluster")
+
+    if direction == "BUY" and nearest_high:
+        if abs(float(nearest_high["level"]) - entry) <= tol:
+            return {
+                "ok": False,
+                "reason": f"buying_into_high_liquidity_cluster({nearest_high['level']})",
+            }
+
+    if direction == "SELL" and nearest_low:
+        if abs(entry - float(nearest_low["level"])) <= tol:
+            return {
+                "ok": False,
+                "reason": f"selling_into_low_liquidity_cluster({nearest_low['level']})",
+            }
+
+    return {"ok": True, "reason": "trap_avoidance_ok"}
+
+
+def liquidity_bonus_points(direction: str, sweep: Dict[str, Any], liq: Dict[str, Any]) -> int:
+    if not USE_SWEEP_ENTRY_BONUS:
+        return 0
+
+    stype = sweep.get("type", "NONE")
+
+    if direction == "BUY" and stype == "BULLISH_SWEEP":
+        return SWEEP_ENTRY_BONUS_POINTS
+
+    if direction == "SELL" and stype == "BEARISH_SWEEP":
+        return SWEEP_ENTRY_BONUS_POINTS
+
+    return 0
 
 # =========================================================
 # BUILD TRADE
@@ -695,6 +1390,36 @@ def build_trade(
     last = candles_5m[-1]
     entry = safe_float(last["close"])
     buf = atr_5m * SL_BUFFER_ATR
+    vol_check = volatility_ok(candles_5m, atr_5m)
+    if not vol_check["ok"]:
+        return {
+        "direction": "HOLD",
+        "confidence": 0,
+        "reason": f"Volatility blocked: {vol_check['reason']}",
+        "score_1_10": 4,
+        "grade": "IGNORE",
+    }
+    regime_info = classify_market_regime(candles_5m, atr_5m)
+    regime_ok = regime_allows_trade(direction, regime_info)
+
+    if not regime_ok["ok"]:
+        return {
+        "direction": "HOLD",
+        "confidence": 0,
+        "reason": f"Regime blocked: {regime_ok['reason']}",
+        "score_1_10": 4,
+        "grade": "IGNORE",
+    }
+
+    spike_check = spike_filter_ok(candles_5m, atr_5m)
+    if not spike_check["ok"]:
+        return {
+        "direction": "HOLD",
+        "confidence": 0,
+        "reason": f"Spike filter blocked: {spike_check['reason']}",
+        "score_1_10": 4,
+        "grade": "IGNORE",
+    }
 
     sup = zones.get("support_zone")
     res = zones.get("resistance_zone")
@@ -703,12 +1428,12 @@ def build_trade(
         sl = (safe_float(sup["low"]) - buf) if sup else (recent_swing_low(candles_5m, 20) - buf)
         risk = entry - sl
         if risk <= 0 or risk > atr_5m * MAX_SL_ATR:
-            return {"direction": "HOLD", "confidence": 0, "reason": "SL invalid/too wide"}
+            return {"direction": "HOLD", "confidence": 0, "reason": "SL invalid"}
     else:
         sl = (safe_float(res["high"]) + buf) if res else (recent_swing_high(candles_5m, 20) + buf)
         risk = sl - entry
         if risk <= 0 or risk > atr_5m * MAX_SL_ATR:
-            return {"direction": "HOLD", "confidence": 0, "reason": "SL invalid/too wide"}
+            return {"direction": "HOLD", "confidence": 0, "reason": "SL invalid"}
 
     tps = pick_tp1_tp2(direction, entry, atr_5m, zones, risk=risk)
     tp1 = tps["tp1"]
@@ -716,46 +1441,110 @@ def build_trade(
 
     if tp2 is None:
         return {"direction": "HOLD", "confidence": 0, "reason": "No TP target"}
+    trap_ok = trap_avoidance_ok(direction, entry, atr_5m, liq)
+    if not trap_ok["ok"]:
+        return {
+        "direction": "HOLD",
+        "confidence": 0,
+        "reason": f"Trap avoidance blocked: {trap_ok['reason']}",
+        "score_1_10": 4,
+        "grade": "IGNORE",
+    }
+
+    quality = market_quality_ok(
+        candles_5m=candles_5m,
+        direction=direction,
+        atr_5m=atr_5m,
+        entry=entry,
+        tp2=float(tp2),
+        sl=float(sl),
+    )
+    if not quality["ok"]:
+        return {
+            "direction": "HOLD",
+            "confidence": 0,
+            "reason": f"Market quality blocked: {quality['reason']}",
+            "score_1_10": 4,
+            "grade": "IGNORE",
+        }
+
+    structure = market_structure_state(candles_5m)
+    sweep = liquidity_sweep_info(candles_5m, atr_5m)
+    fake_break = fake_breakout_block(candles_5m, direction, atr_5m)
+
+    if USE_STRUCTURE_FILTER and not structure_matches(direction, structure, sweep):
+        return {
+            "direction": "HOLD",
+            "confidence": 0,
+            "reason": f"Structure mismatch: {structure.get('reason')}",
+            "score_1_10": 4,
+            "grade": "IGNORE",
+        }
+
+    if not fake_break["ok"]:
+        return {
+            "direction": "HOLD",
+            "confidence": 0,
+            "reason": f"Blocked by fake breakout filter: {fake_break['reason']}",
+            "score_1_10": 4,
+            "grade": "IGNORE",
+        }
+    liq = detect_liquidity_clusters(candles_5m, atr_5m)
 
     rej_zone = sup if direction == "BUY" else res
     rej_ok = rejection_ok(last, direction, rej_zone) if rej_zone else False
     bos_ok = bos_confirm(candles_5m, direction, BOS_LOOKBACK)
     touches = int(sup["touches"]) if (direction == "BUY" and sup) else int(res["touches"]) if (direction == "SELL" and res) else 0
 
+    structure_bonus = 8 if structure_matches(direction, structure, sweep) else 0
+    
+    sweep_bonus = liquidity_bonus_points(direction, sweep, liq)
     conf = confidence_score(
-        align_score=align_score,
+        align_score=align_score, 
         zone_touches=touches,
         rej_ok=rej_ok,
         bos_ok=bos_ok,
         tp1=tp1,
         entry=entry,
         atr_5m=atr_5m,
+        structure_bonus=structure_bonus,
+        sweep_bonus=sweep_bonus,
     )
+
+    rank = setup_rank_1_10(
+        confidence=conf,
+        bos_ok=bos_ok,
+        rej_ok=rej_ok,
+        align_score=align_score,
+        market_quality_ok_flag=True,
+        structure_match=structure_matches(direction, structure, sweep),
+        sweep_type=sweep.get("type", "NONE"),
+        fake_breakout_ok=fake_break.get("ok", True),
+    )
+    grade = score_to_grade(rank)
 
     return {
         "direction": direction,
         "confidence": conf,
+        "score_1_10": rank,
+        "grade": grade,
         "entry": round(entry, 5),
         "sl": round(float(sl), 5),
-        "tp": round(float(tp2), 5),  # UI compatibility
+        "tp": round(float(tp2), 5),
         "tp1": round(float(tp1), 5) if tp1 is not None else None,
         "tp2": round(float(tp2), 5),
         "r_multiple": round(_calc_r_multiple(direction, entry, float(sl), float(tp2)), 3),
-        "reason": "Weighted alignment + Regime ok + Zone + Rejection + Targets(TP1/TP2)",
+        "reason": "Weighted alignment + Structure + Sweep + Zone + Rejection + Targets + Quality",
         "meta": {
+            "structure": structure,
+            "sweep": sweep,
+            "fake_breakout": fake_break,
             "atr_5m": round(atr_5m, 6),
             "align_score": round(float(align_score), 3),
-            "support_touches": int(sup["touches"]) if sup else 0,
-            "resistance_touches": int(res["touches"]) if res else 0,
             "rejection_ok": rej_ok,
             "bos_ok": bos_ok,
-        },
-        "plan": {
-            "tp1": round(float(tp1), 5) if tp1 is not None else None,
-            "tp2": round(float(tp2), 5),
-            "partial_tp_percent_at_tp1": PARTIAL_TP_PERCENT,
-            "move_be_after_tp1": True,
-            "be_buffer_r": BE_BUFFER_R,
+            "liquidity_clusters": liq,
+            "regime": regime_info,
         },
     }
 
@@ -780,7 +1569,7 @@ def trail_stop_suggestion(candles_5m: List[Dict[str, float]], direction: str, at
 
 
 # =========================================================
-# LOCK SIGNAL HELPER
+# LOCK HELPER
 # =========================================================
 def _open_locked_signal(
     symbol: str,
@@ -802,6 +1591,7 @@ def _open_locked_signal(
         "mode": "LOCKED_SIGNAL",
         "entry_type": "LOCKED_SIGNAL",
         "reason": f"{base_reason}; LOCKED SIGNAL",
+        "progress_pct": 0.0,
         "meta": {**(stored.get("meta") or {}), "regime": reg_reason, "bias": bias_info},
     })
     ACTIVE_TRADES[_trade_key(symbol, timeframe)] = stored
@@ -811,7 +1601,7 @@ def _open_locked_signal(
 
 
 # =========================================================
-# PERFORMANCE + HISTORY
+# PERFORMANCE
 # =========================================================
 def _performance(last_n: int) -> Dict[str, Any]:
     last_n = max(1, min(int(last_n), 200))
@@ -841,8 +1631,6 @@ def _performance(last_n: int) -> Dict[str, Any]:
         "win_rate": round(win_rate, 2),
         "avg_R": round(avg_r, 3),
         "total_R": round(total_r, 3),
-        "review_ready": total >= PERFORMANCE_REVIEW_N,
-        "review_target": PERFORMANCE_REVIEW_N,
     }
 
 
@@ -851,8 +1639,7 @@ async def history(symbol: Optional[str] = None, limit: int = 50) -> Dict[str, An
     limit = max(1, min(int(limit), 200))
     items = TRADE_HISTORY
     if symbol:
-        symbol = symbol.strip()
-        items = [t for t in items if t.get("symbol") == symbol]
+        items = [t for t in items if t.get("symbol") == symbol.strip()]
     return {"count": len(items[-limit:]), "items": items[-limit:]}
 
 
@@ -861,26 +1648,163 @@ async def performance(last_n: int = PERFORMANCE_REVIEW_N) -> Dict[str, Any]:
     return _performance(last_n)
 
 
+@router.get("/telegram-test")
+async def telegram_test() -> Dict[str, Any]:
+    ok = await send_telegram_message("✅ DEXTRADEZ BOT Telegram test works")
+    return {"ok": ok}
+
+
 # =========================================================
-# ROUTES
+# LIVE ROUTE
+# =========================================================
+@router.get("/live")
+async def live_market(symbol: str = "R_10", timeframe: str = "5m") -> Dict[str, Any]:
+    app_id = os.getenv("DERIV_APP_ID", "1089")
+
+    candles = await _cached_fetch_candles(
+        app_id=app_id,
+        symbol=symbol,
+        timeframe=timeframe,
+        count=260,
+    )
+
+    if not candles:
+        return {"ok": False, "error": "No candles returned", "symbol": symbol, "timeframe": timeframe}
+
+    last = candles[-1]
+    last_close = safe_float(last["close"])
+
+    a = float(atr_last(candles, ATR_PERIOD) or 0.0)
+    zones = strongest_zones(candles, atr_value=a) if a > 0 else {
+        "support_zone": None,
+        "resistance_zone": None,
+        "support_zones": [],
+        "resistance_zones": [],
+    }
+
+    levels = {
+        "support_zone": zones.get("support_zone"),
+        "resistance_zone": zones.get("resistance_zone"),
+        "supports": [zones["support_zone"]["mid"]] if zones.get("support_zone") else [],
+        "resistances": [zones["resistance_zone"]["mid"]] if zones.get("resistance_zone") else [],
+    }
+
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "price": round(last_close, 5),
+        "candles": candles,
+        "levels": levels,
+        "updated_at": _now_ts(),
+    }
+
+
+# =========================================================
+# WEBSOCKET
+# =========================================================
+@router.websocket("/ws")
+async def websocket_live(ws: WebSocket):
+    await ws.accept()
+
+    try:
+        raw = await ws.receive_text()
+        msg = json.loads(raw)
+
+        symbol = (msg.get("symbol") or "R_10").strip()
+        timeframe = (msg.get("timeframe") or ENTRY_TF).strip()
+
+        app_id = os.getenv("DERIV_APP_ID", "1089")
+        last_sent_candle_time = None
+
+        while True:
+            candles = await _cached_fetch_candles(
+                app_id=app_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                count=260,
+            )
+
+            if candles:
+                last = candles[-1]
+                last_close = safe_float(last["close"])
+                last_time = last.get("time") or last.get("epoch") or last.get("t")
+
+                a = float(atr_last(candles, ATR_PERIOD) or 0.0)
+                zones = strongest_zones(candles, atr_value=a) if a > 0 else {
+                    "support_zone": None,
+                    "resistance_zone": None,
+                    "support_zones": [],
+                    "resistance_zones": [],
+                }
+
+                levels = {
+                    "support_zone": zones.get("support_zone"),
+                    "resistance_zone": zones.get("resistance_zone"),
+                    "supports": [zones["support_zone"]["mid"]] if zones.get("support_zone") else [],
+                    "resistances": [zones["resistance_zone"]["mid"]] if zones.get("resistance_zone") else [],
+                }
+
+                if last_sent_candle_time != last_time:
+                    await ws.send_json({
+                        "type": "live_chart",
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "price": round(last_close, 5),
+                        "candles": candles,
+                        "levels": levels,
+                        "updated_at": _now_ts(),
+                    })
+                    last_sent_candle_time = last_time
+                else:
+                    await ws.send_json({
+                        "type": "live_tick",
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "price": round(last_close, 5),
+                        "updated_at": _now_ts(),
+                    })
+
+            await asyncio.sleep(3)
+
+    except WebSocketDisconnect:
+        print("WebSocket disconnected")
+    except Exception as e:
+        print("WebSocket error:", str(e))
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
+# =========================================================
+# SCAN
 # =========================================================
 @router.post("/scan")
 async def scan_markets(payload: ScanRequest) -> Dict[str, Any]:
     _reset_daily_if_needed()
     app_id = os.getenv("DERIV_APP_ID", "1089")
-
     rows: List[Dict[str, Any]] = []
 
     for sym in payload.symbols:
         key = _trade_key(sym, ENTRY_TF)
 
-        candles_5m = await fetch_deriv_candles(app_id=app_id, symbol=sym, timeframe=ENTRY_TF, count=260)
-        candles_30m = await fetch_deriv_candles(app_id=app_id, symbol=sym, timeframe="30m", count=220)
-        candles_1h = await fetch_deriv_candles(app_id=app_id, symbol=sym, timeframe="1h", count=220)
-        candles_4h = await fetch_deriv_candles(app_id=app_id, symbol=sym, timeframe="4h", count=220)
+        candles_5m, candles_30m, candles_1h, candles_4h = await asyncio.gather(
+            fetch_deriv_candles(app_id=app_id, symbol=sym, timeframe=ENTRY_TF, count=260),
+            fetch_deriv_candles(app_id=app_id, symbol=sym, timeframe="30m", count=220),
+            fetch_deriv_candles(app_id=app_id, symbol=sym, timeframe="1h", count=220),
+            fetch_deriv_candles(app_id=app_id, symbol=sym, timeframe="4h", count=220),
+        )
 
         if not candles_5m or not candles_30m or not candles_1h or not candles_4h:
-            rows.append({"symbol": sym, "score_1_10": 1, "direction": "HOLD", "confidence": 0, "reason": "no_data"})
+            rows.append({
+                "symbol": sym,
+                "score_1_10": 1,
+                "grade": "IGNORE",
+                "direction": "HOLD",
+                "confidence": 0,
+                "reason": "no_data",
+            })
             continue
 
         a5 = float(atr_last(candles_5m, ATR_PERIOD) or 0.0)
@@ -892,13 +1816,10 @@ async def scan_markets(payload: ScanRequest) -> Dict[str, Any]:
         direction = bias.get("direction", "HOLD")
         base_reason = bias.get("reason", "")
 
-        if not reg["ok"]:
-            direction = "HOLD"
-            base_reason = reg["reason"]
-
         row: Dict[str, Any] = {
             "symbol": sym,
             "score_1_10": 2,
+            "grade": "IGNORE",
             "direction": "HOLD",
             "confidence": 0,
             "reason": base_reason,
@@ -915,10 +1836,16 @@ async def scan_markets(payload: ScanRequest) -> Dict[str, Any]:
             "bias_details": bias.get("details", {}),
         }
 
+        if not reg["ok"]:
+            row["reason"] = reg["reason"]
+            rows.append(row)
+            continue
+
         if key in ACTIVE_TRADES:
             t = ACTIVE_TRADES[key]
             row.update({
-                "score_1_10": 10,
+                "score_1_10": int(t.get("score_1_10", 8)),
+                "grade": t.get("grade", score_to_grade(int(t.get("score_1_10", 8)))),
                 "direction": t.get("direction", "HOLD"),
                 "confidence": int(t.get("confidence", 80)),
                 "reason": "ACTIVE TRADE",
@@ -931,42 +1858,28 @@ async def scan_markets(payload: ScanRequest) -> Dict[str, Any]:
             })
         elif key in PENDING_SETUPS:
             row.update({
-                "score_1_10": 8,
+                "score_1_10": 5,
+                "grade": "WATCH",
                 "direction": PENDING_SETUPS[key].get("direction", "HOLD"),
                 "confidence": 65,
                 "reason": "Pending: BOS done, waiting retest+confirm",
                 "entry_type": "SNIPER_PENDING",
             })
-        else:
-            if direction in ("BUY", "SELL"):
-                t = build_trade(candles_5m, direction, zones, a5, float(bias.get("score") or 0.0))
-                conf = int(t.get("confidence", 0))
-                row.update({
-                    "direction": direction,
-                    "confidence": conf,
-                    "entry": t.get("entry"),
-                    "sl": t.get("sl"),
-                    "tp": t.get("tp"),
-                    "tp1": t.get("tp1"),
-                    "tp2": t.get("tp2"),
-                    "reason": base_reason,
-                    "entry_type": "SETUP",
-                })
-                score10 = 3
-                if conf >= 60:
-                    score10 = 5
-                if conf >= 70:
-                    score10 = 6
-                if bos_confirm(candles_5m, direction, BOS_LOOKBACK):
-                    score10 = max(score10, 7)
-                if reg["ok"] and conf >= 75:
-                    score10 = max(score10, 8)
-                row["score_1_10"] = score10
-
-        sup = zones.get("support_zone")
-        res = zones.get("resistance_zone")
-        row["support_touches"] = int(sup["touches"]) if sup else 0
-        row["resistance_touches"] = int(res["touches"]) if res else 0
+        elif direction in ("BUY", "SELL"):
+            t = build_trade(candles_5m, direction, zones, a5, float(bias.get("score") or 0.0))
+            row.update({
+                "direction": t.get("direction", "HOLD"),
+                "confidence": int(t.get("confidence", 0)),
+                "entry": t.get("entry"),
+                "sl": t.get("sl"),
+                "tp": t.get("tp"),
+                "tp1": t.get("tp1"),
+                "tp2": t.get("tp2"),
+                "reason": t.get("reason", base_reason),
+                "entry_type": "SETUP" if t.get("direction") in ("BUY", "SELL") else "NONE",
+                "score_1_10": int(t.get("score_1_10", 3)),
+                "grade": t.get("grade", "IGNORE"),
+            })
 
         rows.append(row)
 
@@ -976,11 +1889,15 @@ async def scan_markets(payload: ScanRequest) -> Dict[str, Any]:
         "timeframe": ENTRY_TF,
         "daily_R": RISK_STATE["daily_R"],
         "active_total": _active_total(),
+        "max_active_total": MAX_ACTIVE_TOTAL,
         "ranked": rows,
         "top": rows[0] if rows else None,
     }
 
 
+# =========================================================
+# ANALYZE
+# =========================================================
 @router.post("/analyze")
 async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
     _reset_daily_if_needed()
@@ -991,10 +1908,12 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
 
     app_id = os.getenv("DERIV_APP_ID", "1089")
 
-    candles_5m = await fetch_deriv_candles(app_id=app_id, symbol=symbol, timeframe=timeframe, count=260)
-    candles_30m = await fetch_deriv_candles(app_id=app_id, symbol=symbol, timeframe="30m", count=220)
-    candles_1h = await fetch_deriv_candles(app_id=app_id, symbol=symbol, timeframe="1h", count=220)
-    candles_4h = await fetch_deriv_candles(app_id=app_id, symbol=symbol, timeframe="4h", count=220)
+    candles_5m, candles_30m, candles_1h, candles_4h = await asyncio.gather(
+        fetch_deriv_candles(app_id=app_id, symbol=symbol, timeframe=timeframe, count=260),
+        fetch_deriv_candles(app_id=app_id, symbol=symbol, timeframe="30m", count=220),
+        fetch_deriv_candles(app_id=app_id, symbol=symbol, timeframe="1h", count=220),
+        fetch_deriv_candles(app_id=app_id, symbol=symbol, timeframe="4h", count=220),
+    )
 
     if not candles_5m or not candles_30m or not candles_1h or not candles_4h:
         return {"error": "No candles returned", "symbol": symbol, "timeframe": timeframe}
@@ -1018,9 +1937,9 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
     bias_dir = bias.get("direction", "HOLD")
     bias_score = float(bias.get("score") or 0.0)
 
-    # -------------------------------------------------
+    # =====================================================
     # ACTIVE TRADE MANAGEMENT
-    # -------------------------------------------------
+    # =====================================================
     if key in ACTIVE_TRADES:
         trade = ACTIVE_TRADES[key]
         direction = trade["direction"]
@@ -1032,27 +1951,35 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
         risk = abs(entry - sl) if abs(entry - sl) > 0 else 1e-9
         actions = []
 
-        # TP1 milestone
         if tp1 is not None and not trade.get("tp1_hit", False):
             tp1v = safe_float(tp1)
             if hit_level(direction, last_high, last_low, tp1v, "TP1"):
                 trade["tp1_hit"] = True
+                await send_telegram_message(build_tp1_message(symbol, timeframe, trade))
                 be_to = entry + (risk * BE_BUFFER_R) if direction == "BUY" else entry - (risk * BE_BUFFER_R)
 
-                actions.append({"type": "TP1_HIT", "why": "TP1 hit → take partial + protect trade"})
-                actions.append({"type": "PARTIAL_TP", "percent": PARTIAL_TP_PERCENT, "why": "Take partial at TP1"})
-                actions.append({"type": "MOVE_SL", "to": round(be_to, 5), "why": "Move SL to protected BE (after TP1)"})
+                actions.append({"type": "TP1_HIT", "why": "TP1 hit"})
+                actions.append({"type": "PARTIAL_TP", "percent": PARTIAL_TP_PERCENT, "why": "Take partial"})
+                actions.append({"type": "MOVE_SL", "to": round(be_to, 5), "why": "Move SL to BE"})
 
         trail_price = trail_stop_suggestion(candles_5m, direction, a5)
-        actions.append({"type": "TRAIL_SUGGESTION", "to": round(trail_price, 5), "why": "Trail behind structure (optional)"})
+        actions.append({"type": "TRAIL_SUGGESTION", "to": round(trail_price, 5), "why": "Trail stop suggestion"})
 
-        # Close at SL or TP2
+        progress_pct = trade_progress_percent(direction, entry, sl, tp2, last_close)
+
         if direction == "BUY":
             outcome = "SL" if last_low <= sl else "TP2" if last_high >= tp2 else None
         else:
             outcome = "SL" if last_high >= sl else "TP2" if last_low <= tp2 else None
 
         if outcome is None:
+            live_signal = {
+                **trade,
+                "entry_type": trade.get("entry_type", "ACTIVE_MANAGEMENT"),
+                "progress_pct": round(progress_pct, 1),
+                "grade": trade.get("grade", score_to_grade(int(trade.get("score_1_10", 8)))),
+                "score_1_10": int(trade.get("score_1_10", 8)),
+            }
             return {
                 "symbol": symbol,
                 "timeframe": timeframe,
@@ -1060,7 +1987,7 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
                 "candles": candles_5m,
                 "levels": levels,
                 "active": True,
-                "signal": {**trade, "entry_type": trade.get("entry_type", "ACTIVE_MANAGEMENT")},
+                "signal": live_signal,
                 "entry_type": trade.get("entry_type", "ACTIVE_MANAGEMENT"),
                 "bias": bias_dir,
                 "bias_score": bias_score,
@@ -1068,12 +1995,14 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
                 "actions": actions,
                 "daily_R": RISK_STATE["daily_R"],
                 "active_total": _active_total(),
+                "max_active_total": MAX_ACTIVE_TOTAL,
             }
 
         closed = dict(trade)
         closed["closed_at"] = _now_ts()
         closed["outcome"] = outcome
         closed["status"] = "CLOSED"
+        closed["progress_pct"] = round(progress_pct, 1)
 
         tid = trade.get("trade_id")
         if tid:
@@ -1089,6 +2018,8 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
 
         ACTIVE_TRADES.pop(key, None)
 
+        await send_telegram_message(build_closed_message(symbol, timeframe, closed, outcome, last_close))
+
         return {
             "symbol": symbol,
             "timeframe": timeframe,
@@ -1103,13 +2034,14 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias_details": bias.get("details", {}),
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
+            "max_active_total": MAX_ACTIVE_TOTAL,
             "signal": {"direction": "HOLD", "confidence": 0, "reason": f"Trade closed by {outcome}"},
             "actions": actions,
         }
 
-    # -------------------------------------------------
-    # RISK GATES
-    # -------------------------------------------------
+    # =====================================================
+    # RISK GUARDS
+    # =====================================================
     if RISK_STATE["daily_R"] <= DAILY_LOSS_LIMIT_R:
         return {
             "symbol": symbol,
@@ -1124,7 +2056,8 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias_details": bias.get("details", {}),
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
-            "signal": {"direction": "HOLD", "confidence": 0, "reason": "Daily loss limit hit — paused"},
+            "max_active_total": MAX_ACTIVE_TOTAL,
+            "signal": {"direction": "HOLD", "confidence": 0, "reason": "Daily loss limit hit"},
             "actions": [],
         }
 
@@ -1142,6 +2075,7 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias_details": bias.get("details", {}),
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
+            "max_active_total": MAX_ACTIVE_TOTAL,
             "signal": {"direction": "HOLD", "confidence": 0, "reason": "Max active trades reached"},
             "actions": [],
         }
@@ -1161,6 +2095,7 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias_details": bias.get("details", {}),
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
+            "max_active_total": MAX_ACTIVE_TOTAL,
             "signal": {"direction": "HOLD", "confidence": 0, "reason": "Cooldown after loss"},
             "cooldown_seconds_left": int(cooldown_until - time.time()),
             "actions": [],
@@ -1181,13 +2116,11 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias_details": bias.get("details", {}),
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
+            "max_active_total": MAX_ACTIVE_TOTAL,
             "signal": {"direction": "HOLD", "confidence": 0, "reason": "Max signals/day reached"},
             "actions": [],
         }
 
-    # -------------------------------------------------
-    # REGIME FILTER + ALIGNMENT FILTER
-    # -------------------------------------------------
     reg = regime_ok(candles_5m)
     if not reg["ok"]:
         return {
@@ -1201,9 +2134,7 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias": bias_dir,
             "bias_score": bias_score,
             "bias_details": bias.get("details", {}),
-            "daily_R": RISK_STATE["daily_R"],
-            "active_total": _active_total(),
-            "signal": {"direction": "HOLD", "confidence": 0, "reason": reg["reason"], "meta": reg},
+            "signal": {"direction": "HOLD", "confidence": 0, "reason": reg["reason"]},
             "actions": [],
         }
 
@@ -1220,13 +2151,10 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias": bias_dir,
             "bias_score": bias_score,
             "bias_details": bias.get("details", {}),
-            "daily_R": RISK_STATE["daily_R"],
-            "active_total": _active_total(),
-            "signal": {"direction": "HOLD", "confidence": 0, "reason": bias.get("reason", "No bias"), "meta": {"bias": bias}},
+            "signal": {"direction": "HOLD", "confidence": 0, "reason": bias.get("reason", "No bias")},
             "actions": [],
         }
 
-    # Must have zone on the correct side
     if bias_dir == "BUY" and not zones.get("support_zone"):
         return {
             "symbol": symbol,
@@ -1239,11 +2167,10 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias": bias_dir,
             "bias_score": bias_score,
             "bias_details": bias.get("details", {}),
-            "daily_R": RISK_STATE["daily_R"],
-            "active_total": _active_total(),
             "signal": {"direction": "HOLD", "confidence": 0, "reason": "BUY bias but no support zone"},
             "actions": [],
         }
+
     if bias_dir == "SELL" and not zones.get("resistance_zone"):
         return {
             "symbol": symbol,
@@ -1256,15 +2183,13 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias": bias_dir,
             "bias_score": bias_score,
             "bias_details": bias.get("details", {}),
-            "daily_R": RISK_STATE["daily_R"],
-            "active_total": _active_total(),
             "signal": {"direction": "HOLD", "confidence": 0, "reason": "SELL bias but no resistance zone"},
             "actions": [],
         }
 
-    # -------------------------------------------------
-    # FAST ENTRY (strict)
-    # -------------------------------------------------
+    # =====================================================
+    # FAST ENTRY
+    # =====================================================
     if ENABLE_FAST_ENTRY and key not in PENDING_SETUPS:
         t = build_trade(candles_5m, bias_dir, zones, a5, bias_score)
         rej_zone = zones.get("support_zone") if bias_dir == "BUY" else zones.get("resistance_zone")
@@ -1273,6 +2198,7 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
         if (
             t.get("direction") in ("BUY", "SELL")
             and int(t.get("confidence", 0)) >= FAST_ENTRY_MIN_CONF
+            and int(t.get("score_1_10", 0)) >= 6
             and rej_ok
             and t.get("tp1") is not None
         ):
@@ -1287,13 +2213,15 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
                 "tp1_hit": False,
                 "mode": "FAST_ENTRY",
                 "entry_type": "FAST_ENTRY",
-                "reason": f"{bias.get('reason','bias ok')}; FAST ENTRY (strict)",
-                "meta": {**(stored.get("meta") or {}), "regime": reg.get("reason"), "bias": bias},
+                "reason": f"{bias.get('reason','bias ok')}; FAST ENTRY",
+                "progress_pct": 0.0,
+                "meta": {"regime": reg.get("reason"), "bias": bias},
             })
 
             ACTIVE_TRADES[key] = stored
             RISK_STATE["signals_today"][symbol] = int(RISK_STATE["signals_today"].get(symbol, 0)) + 1
             _push_history(dict(stored))
+            await send_telegram_message(build_signal_message(symbol, timeframe, stored))
 
             return {
                 "symbol": symbol,
@@ -1310,46 +2238,54 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
                 "actions": [],
                 "daily_R": RISK_STATE["daily_R"],
                 "active_total": _active_total(),
+                "max_active_total": MAX_ACTIVE_TOTAL,
             }
 
-    # -------------------------------------------------
-    # SIGNAL LOCK (keeps strong setup stable on screen)
-    # -------------------------------------------------
+    # =====================================================
+    # LOCK SIGNAL
+    # =====================================================
     if ENABLE_SIGNAL_LOCK and key not in ACTIVE_TRADES:
         t = build_trade(candles_5m, bias_dir, zones, a5, bias_score)
-        if t.get("direction") in ("BUY", "SELL"):
-            rej_zone = zones.get("support_zone") if bias_dir == "BUY" else zones.get("resistance_zone")
-            rej_ok = rejection_ok(last, bias_dir, rej_zone) if rej_zone else False
+        rej_zone = zones.get("support_zone") if bias_dir == "BUY" else zones.get("resistance_zone")
+        rej_ok = rejection_ok(last, bias_dir, rej_zone) if rej_zone else False
 
-            if int(t.get("confidence", 0)) >= MIN_LOCK_CONF and rej_ok and t.get("tp1") is not None:
-                stored = _open_locked_signal(
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    base_reason=bias.get("reason", "bias ok"),
-                    bias_info=bias,
-                    reg_reason=reg.get("reason", "regime_ok"),
-                    trade_like=t,
-                )
-                return {
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "price": round(last_close, 5),
-                    "candles": candles_5m,
-                    "levels": levels,
-                    "active": True,
-                    "signal": stored,
-                    "entry_type": "LOCKED_SIGNAL",
-                    "bias": bias_dir,
-                    "bias_score": bias_score,
-                    "bias_details": bias.get("details", {}),
-                    "actions": [],
-                    "daily_R": RISK_STATE["daily_R"],
-                    "active_total": _active_total(),
-                }
+        if (
+            int(t.get("confidence", 0)) >= MIN_LOCK_CONF
+            and int(t.get("score_1_10", 0)) >= 6
+            and rej_ok
+            and t.get("tp1") is not None
+        ):
+            stored = _open_locked_signal(
+                symbol=symbol,
+                timeframe=timeframe,
+                base_reason=bias.get("reason", "bias ok"),
+                bias_info=bias,
+                reg_reason=reg.get("reason", "regime_ok"),
+                trade_like=t,
+            )
+            await send_telegram_message(build_signal_message(symbol, timeframe, stored))
 
-    # -------------------------------------------------
-    # SNIPER PATH: BOS -> RETEST -> REJECTION -> OPEN
-    # -------------------------------------------------
+            return {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "price": round(last_close, 5),
+                "candles": candles_5m,
+                "levels": levels,
+                "active": True,
+                "signal": stored,
+                "entry_type": "LOCKED_SIGNAL",
+                "bias": bias_dir,
+                "bias_score": bias_score,
+                "bias_details": bias.get("details", {}),
+                "actions": [],
+                "daily_R": RISK_STATE["daily_R"],
+                "active_total": _active_total(),
+                "max_active_total": MAX_ACTIVE_TOTAL,
+            }
+
+    # =====================================================
+    # PENDING SNIPER
+    # =====================================================
     if key not in PENDING_SETUPS:
         if bos_confirm(candles_5m, bias_dir, BOS_LOOKBACK):
             lvl = bos_level(candles_5m, bias_dir, BOS_LOOKBACK)
@@ -1359,6 +2295,8 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
                     "bos_level": float(lvl),
                     "created_idx": len(candles_5m) - 1,
                     "bias": bias,
+                    "score_1_10": 5,
+                    "grade": "WATCH",
                 }
                 return {
                     "symbol": symbol,
@@ -1371,11 +2309,18 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
                     "bias": bias_dir,
                     "bias_score": bias_score,
                     "bias_details": bias.get("details", {}),
-                    "signal": {"direction": "HOLD", "confidence": 0, "reason": f"{bias.get('reason','')}; BOS confirmed → waiting retest"},
+                    "signal": {
+                        "direction": "HOLD",
+                        "confidence": 0,
+                        "score_1_10": 5,
+                        "grade": "WATCH",
+                        "reason": f"{bias.get('reason','')}; BOS confirmed -> waiting retest",
+                    },
                     "pending": PENDING_SETUPS[key],
                     "actions": [],
                     "daily_R": RISK_STATE["daily_R"],
                     "active_total": _active_total(),
+                    "max_active_total": MAX_ACTIVE_TOTAL,
                 }
 
         return {
@@ -1389,10 +2334,17 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias": bias_dir,
             "bias_score": bias_score,
             "bias_details": bias.get("details", {}),
-            "signal": {"direction": "HOLD", "confidence": 0, "reason": f"{bias.get('reason','')}; waiting BOS"},
+            "signal": {
+                "direction": "HOLD",
+                "confidence": 0,
+                "score_1_10": 4,
+                "grade": "IGNORE",
+                "reason": f"{bias.get('reason','')}; waiting BOS",
+            },
             "actions": [],
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
+            "max_active_total": MAX_ACTIVE_TOTAL,
         }
 
     pending = PENDING_SETUPS[key]
@@ -1414,10 +2366,17 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias": bias_dir,
             "bias_score": bias_score,
             "bias_details": bias.get("details", {}),
-            "signal": {"direction": "HOLD", "confidence": 0, "reason": "Pending expired (no retest)"},
+            "signal": {
+                "direction": "HOLD",
+                "confidence": 0,
+                "score_1_10": 4,
+                "grade": "IGNORE",
+                "reason": "Pending expired",
+            },
             "actions": [],
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
+            "max_active_total": MAX_ACTIVE_TOTAL,
         }
 
     if not in_retest_zone(last, bos_lvl, tol):
@@ -1432,11 +2391,18 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias": bias_dir,
             "bias_score": bias_score,
             "bias_details": bias.get("details", {}),
-            "signal": {"direction": "HOLD", "confidence": 0, "reason": f"Pending → waiting retest near BOS {round(bos_lvl,5)}"},
+            "signal": {
+                "direction": "HOLD",
+                "confidence": 0,
+                "score_1_10": 5,
+                "grade": "WATCH",
+                "reason": f"Waiting retest near BOS {round(bos_lvl,5)}",
+            },
             "pending": pending,
             "actions": [],
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
+            "max_active_total": MAX_ACTIVE_TOTAL,
         }
 
     z = zones.get("support_zone") if p_dir == "BUY" else zones.get("resistance_zone")
@@ -1452,11 +2418,18 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias": bias_dir,
             "bias_score": bias_score,
             "bias_details": bias.get("details", {}),
-            "signal": {"direction": "HOLD", "confidence": 0, "reason": "Retest not inside correct zone"},
+            "signal": {
+                "direction": "HOLD",
+                "confidence": 0,
+                "score_1_10": 5,
+                "grade": "WATCH",
+                "reason": "Retest not inside correct zone",
+            },
             "pending": pending,
             "actions": [],
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
+            "max_active_total": MAX_ACTIVE_TOTAL,
         }
 
     if not rejection_ok(last, p_dir, z):
@@ -1471,15 +2444,22 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias": bias_dir,
             "bias_score": bias_score,
             "bias_details": bias.get("details", {}),
-            "signal": {"direction": "HOLD", "confidence": 0, "reason": "Waiting rejection candle in zone"},
+            "signal": {
+                "direction": "HOLD",
+                "confidence": 0,
+                "score_1_10": 5,
+                "grade": "WATCH",
+                "reason": "Waiting rejection candle",
+            },
             "pending": pending,
             "actions": [],
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
+            "max_active_total": MAX_ACTIVE_TOTAL,
         }
 
     t = build_trade(candles_5m, p_dir, zones, a5, bias_score)
-    if t.get("direction") not in ("BUY", "SELL") or t.get("tp1") is None:
+    if t.get("direction") not in ("BUY", "SELL") or t.get("tp1") is None or int(t.get("score_1_10", 0)) < 6:
         PENDING_SETUPS.pop(key, None)
         return {
             "symbol": symbol,
@@ -1492,10 +2472,17 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
             "bias": bias_dir,
             "bias_score": bias_score,
             "bias_details": bias.get("details", {}),
-            "signal": {"direction": "HOLD", "confidence": 0, "reason": t.get("reason", "Trade rejected")},
+            "signal": {
+                "direction": "HOLD",
+                "confidence": 0,
+                "score_1_10": int(t.get("score_1_10", 4)),
+                "grade": t.get("grade", "IGNORE"),
+                "reason": t.get("reason", "Trade rejected"),
+            },
             "actions": [],
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
+            "max_active_total": MAX_ACTIVE_TOTAL,
         }
 
     trade_id = str(uuid.uuid4())
@@ -1510,14 +2497,16 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
         "bos_level": round(bos_lvl, 5),
         "mode": "SNIPER",
         "entry_type": "SNIPER",
-        "reason": f"{bias.get('reason','bias ok')}; SNIPER (BOS→Retest→Rejection)",
-        "meta": {**(stored.get("meta") or {}), "bias": bias, "regime": reg.get("reason")},
+        "reason": f"{bias.get('reason','bias ok')}; SNIPER",
+        "progress_pct": 0.0,
+        "meta": {"bias": bias, "regime": reg.get("reason")},
     })
 
     ACTIVE_TRADES[key] = stored
     PENDING_SETUPS.pop(key, None)
     RISK_STATE["signals_today"][symbol] = int(RISK_STATE["signals_today"].get(symbol, 0)) + 1
     _push_history(dict(stored))
+    await send_telegram_message(build_signal_message(symbol, timeframe, stored))
 
     return {
         "symbol": symbol,
@@ -1534,4 +2523,5 @@ async def analyze_market(data: AnalyzeRequest) -> Dict[str, Any]:
         "actions": [],
         "daily_R": RISK_STATE["daily_R"],
         "active_total": _active_total(),
+        "max_active_total": MAX_ACTIVE_TOTAL,
     }
