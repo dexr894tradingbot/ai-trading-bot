@@ -309,6 +309,7 @@ export default function Dashboard() {
   const lastOkAtRef = useRef(restored?.lastOkAt || 0);
   const lastLiveAtRef = useRef(restored?.lastLiveAt || 0);
   const openTradeRef = useRef(null);
+  const analyzeRequestRef = useRef(0);
 
   useEffect(() => {
     try {
@@ -407,6 +408,28 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    setCandles([]);
+    setSupports([]);
+    setResistances([]);
+    setPrice(null);
+    setDirection("HOLD");
+    setConfidence(0);
+    setEntry(null);
+    setSl(null);
+    setTp(null);
+    setTp1(null);
+    setTp2(null);
+    setReason("Loading new market...");
+    setEntryType("");
+    setAlignmentScore(null);
+    setAlignmentLabel(null);
+    setAlignmentDetails([]);
+    setLastActions([]);
+    setStatus("ANALYZING");
+    setError("");
+  }, [selectedSymbol, timeframe]);
+
   const topPick = useMemo(() => {
     if (!ranked?.length) return null;
     const candidates = ranked
@@ -429,12 +452,18 @@ export default function Dashboard() {
   const runAnalyze = useCallback(
     async (symbol, tf) => {
       if (busyRef.current) return null;
+
+      const requestId = ++analyzeRequestRef.current;
+
       busyRef.current = true;
       setError("");
       setStatus("ANALYZING");
 
       try {
         const data = await withTimeout(analyzeMarket(symbol, tf), 15000, "Analyze");
+
+        if (requestId !== analyzeRequestRef.current) return null;
+
         const norm = normalizeAnalyzeResponse(data);
 
         setCandles(norm.candles);
@@ -538,10 +567,14 @@ export default function Dashboard() {
         setStatus("LIVE");
         return norm;
       } catch (e) {
-        setError(e?.message || "Analyze failed");
+        if (requestId === analyzeRequestRef.current) {
+          setError(e?.message || "Analyze failed");
+        }
         return null;
       } finally {
-        busyRef.current = false;
+        if (requestId === analyzeRequestRef.current) {
+          busyRef.current = false;
+        }
       }
     },
     [dailyR, activeTotal, maxActiveTotal]
@@ -623,12 +656,16 @@ export default function Dashboard() {
           try {
             const msg = JSON.parse(event.data);
 
-            if (msg.type === "live_chart") {
+            if (
+              msg.type === "live_chart" &&
+              (msg.symbol === selectedSymbol || !msg.symbol) &&
+              (msg.timeframe === timeframe || !msg.timeframe)
+            ) {
               const supports = Array.isArray(msg?.levels?.supports) ? msg.levels.supports : [];
               const resistances = Array.isArray(msg?.levels?.resistances) ? msg.levels.resistances : [];
-              const candles = Array.isArray(msg?.candles) ? msg.candles : [];
+              const nextCandles = Array.isArray(msg?.candles) ? msg.candles : [];
 
-              setCandles(candles);
+              setCandles(nextCandles);
               setSupports(supports);
               setResistances(resistances);
 
@@ -899,7 +936,19 @@ export default function Dashboard() {
           </div>
 
           <div className="chartWrap">
-            <Chart candles={candles} supports={supports} resistances={resistances} symbol={selectedSymbol} timeframe={timeframe} />
+            <Chart
+              key={`${selectedSymbol}-${timeframe}`}
+              candles={candles}
+              supports={supports}
+              resistances={resistances}
+              symbol={selectedSymbol}
+              timeframe={timeframe}
+              entry={entry}
+              sl={sl}
+              tp={tp}
+              tp1={tp1}
+              tp2={tp2}
+            />
           </div>
         </div>
 

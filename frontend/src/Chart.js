@@ -27,6 +27,15 @@ export default function Chart({
   useEffect(() => {
     if (!containerRef.current) return;
 
+    if (chartRef.current) {
+      try {
+        chartRef.current.remove();
+      } catch {}
+      chartRef.current = null;
+      candleSeriesRef.current = null;
+      priceLinesRef.current = [];
+    }
+
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: 460,
@@ -112,7 +121,7 @@ export default function Chart({
         chart.remove();
       } catch {}
     };
-  }, []);
+  }, [symbol]);
 
   useEffect(() => {
     const series = candleSeriesRef.current;
@@ -123,11 +132,7 @@ export default function Chart({
 
     const formatted = arr
       .map((c) => ({
-        time:
-          c.time ??
-          c.epoch ??
-          c.t ??
-          null,
+        time: c.time ?? c.epoch ?? c.t ?? null,
         open: safeNumber(c.open ?? c.o),
         high: safeNumber(c.high ?? c.h),
         low: safeNumber(c.low ?? c.l),
@@ -142,11 +147,14 @@ export default function Chart({
           c.close !== null
       );
 
-    if (!formatted.length) return;
+    if (!formatted.length) {
+      series.setData([]);
+      return;
+    }
 
     series.setData(formatted);
     chart.timeScale().fitContent();
-  }, [candles]);
+  }, [candles, symbol]);
 
   useEffect(() => {
     const series = candleSeriesRef.current;
@@ -187,7 +195,7 @@ export default function Chart({
     addLine(tp, "TP", "#ffd76a");
     addLine(tp1, "TP1", "#8affc1");
     addLine(tp2, "TP2", "#ffe082");
-  }, [supports, resistances, entry, sl, tp, tp1, tp2]);
+  }, [supports, resistances, entry, sl, tp, tp1, tp2, symbol]);
 
   return (
     <div
