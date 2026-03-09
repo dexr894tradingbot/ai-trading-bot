@@ -1819,3 +1819,6 @@ async def live_feed(ws: WebSocket):
 
     except WebSocketDisconnect:
         pass
+ # Backward compatibility aliases
+analyze_market = analyze
+scan_markets = scan
