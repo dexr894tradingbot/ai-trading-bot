@@ -177,7 +177,7 @@ async def auto_analyze_loop():
         try:
             for symbol in AUTO_SYMBOLS:
                 try:
-                    result = await analyze_market(AnalyzeRequest(symbol=symbol, timeframe="5m"))
+                    result = await analyze_market(AnalyzeRequest(symbol=symbol, timeframe="1m"))
                     signal = result.get("signal", {})
                     reason = signal.get("reason", "-")
                     direction = signal.get("direction", "HOLD")

@@ -16,7 +16,6 @@ from utils.telegram import send_telegram_message
 
 router = APIRouter()
 
-
 # =========================================================
 # CONFIG
 # =========================================================
@@ -24,7 +23,7 @@ ENTRY_TF = "1m"
 
 ALIGN_TFS = ["30m", "1h", "4h"]
 ALIGN_WEIGHTS = {"30m": 0.25, "1h": 0.35, "4h": 0.40}
-ALIGN_MIN_SCORE = 0.50
+ALIGN_MIN_SCORE = 0.48
 ALIGN_MIN_MARGIN = 0.08
 
 EMA_FAST = 20
@@ -36,7 +35,7 @@ USE_REGIME_FILTER = True
 USE_REGIME_CLASSIFIER = True
 REGIME_LOOKBACK = 60
 REGIME_TREND_EMA_GAP_MIN_ATR = 0.35
-REGIME_CHAOS_CROSS_COUNT = 7
+REGIME_CHAOS_CROSS_COUNT = 8
 EMA_CROSS_LOOKBACK = 45
 EMA_CROSS_MAX = 10
 
@@ -56,8 +55,8 @@ BOS_LOOKBACK = 12
 RETEST_TOL_ATR = 0.20
 RETEST_MAX_CANDLES = 8
 
-SL_BUFFER_ATR = 0.20
-MAX_SL_ATR = 2.50
+SL_BUFFER_ATR = 0.25
+MAX_SL_ATR = 3.20
 
 MIN_TP1_ATR = 0.8
 MIN_TP2_ATR = 1.5
@@ -74,10 +73,7 @@ COOLDOWN_MIN_AFTER_LOSS = 20
 MAX_SIGNALS_PER_DAY_PER_SYMBOL = 5
 
 ENABLE_FAST_ENTRY = True
-FAST_ENTRY_MIN_CONF = 50
-
-ENABLE_SIGNAL_LOCK = True
-MIN_LOCK_CONF = 55
+FAST_ENTRY_MIN_CONF = 58
 
 MAX_HISTORY = 500
 PERFORMANCE_REVIEW_N = 30
@@ -87,13 +83,13 @@ BREAKOUT_BODY_MIN_RATIO = 0.35
 BREAKOUT_WICK_MAX_OPPOSITE_RATIO = 0.35
 BREAKOUT_RANGE_MIN_ATR = 0.55
 BREAKOUT_CLOSE_NEAR_EXTREME_RATIO = 0.35
-MAX_ENTRY_DISTANCE_FROM_EMA_ATR = 1.60
-MIN_TP2_R_MULT = 1.40
+MAX_ENTRY_DISTANCE_FROM_EMA_ATR = 1.80
+MIN_TP2_R_MULT = 1.35
 
 USE_VOLATILITY_FILTER = True
 VOL_ATR_LOOKBACK = 50
-VOL_MIN_RATIO = 0.6
-VOL_MAX_RATIO = 1.8
+VOL_MIN_RATIO = 0.55
+VOL_MAX_RATIO = 2.2
 
 USE_STRUCTURE_FILTER = True
 STRUCTURE_LOOKBACK = 50
@@ -107,7 +103,7 @@ LIQ_CLUSTER_MIN_TOUCHES = 3
 
 USE_SPIKE_FILTER = True
 SPIKE_LOOKBACK = 5
-SPIKE_MAX_ATR_MULT = 2.8
+SPIKE_MAX_ATR_MULT = 3.0
 
 USE_SWEEP_ENTRY_BONUS = True
 SWEEP_ENTRY_BONUS_POINTS = 6
@@ -140,7 +136,7 @@ VACUUM_RANGE_ATR_MIN = 1.10
 VACUUM_BONUS_POINTS = 8
 
 LIVE_CACHE_TTL_SEC = 2
-
+MIN_HOLD_SECONDS_AFTER_OPEN = 30
 
 # =========================================================
 # MEMORY / STATE
@@ -157,7 +153,6 @@ RISK_STATE: Dict[str, Any] = {
     "cooldown_until": {},
 }
 
-
 # =========================================================
 # REQUEST MODELS
 # =========================================================
@@ -169,7 +164,7 @@ class AnalyzeRequest(BaseModel):
 class ScanRequest(BaseModel):
     timeframe: str = "1m"
     symbols: List[str] = ["R_10", "R_25", "R_50", "R_75", "R_100"]
- # =========================================================
+# =========================================================
 # BASIC HELPERS
 # =========================================================
 def _today_key() -> str:
@@ -359,8 +354,6 @@ def _performance(last_n: int) -> Dict[str, Any]:
         "avg_R": round(avg_r, 3),
         "total_R": round(total_r, 3),
     }
-
-
 def build_daily_report_message() -> str:
     perf = _performance(PERFORMANCE_REVIEW_N)
     return (
@@ -373,7 +366,9 @@ def build_daily_report_message() -> str:
         f"Win Rate: {perf.get('win_rate', 0)}%\n"
         f"Avg R: {perf.get('avg_R', 0)}\n"
         f"Total R: {perf.get('total_R', 0)}"
-    )   
+    )
+
+
 # =========================================================
 # INDICATORS
 # =========================================================
@@ -509,7 +504,7 @@ def recent_swing_low(candles: List[Dict[str, float]], lookback: int = 20) -> flo
 
 
 def recent_swing_high(candles: List[Dict[str, float]], lookback: int = 20) -> float:
-    return max(safe_float(c["high"]) for c in candles[-lookback:])
+    return max(safe_float(c["high"]) for c in candles[-lookback:])   
 # =========================================================
 # VOLATILITY / SPIKE / MOMENTUM
 # =========================================================
@@ -846,6 +841,7 @@ def weighted_alignment(candles_by_tf: Dict[str, List[Dict[str, float]]]) -> Dict
             sell_score += weight * ts01
 
         details[tf] = {
+            "tf": tf,
             "dir": direction,
             "trend_strength": trend_strength,
             "weight": weight,
@@ -857,12 +853,13 @@ def weighted_alignment(candles_by_tf: Dict[str, List[Dict[str, float]]]) -> Dict
     direction = "BUY" if buy_score > sell_score else "SELL" if sell_score > buy_score else "HOLD"
 
     if best < ALIGN_MIN_SCORE:
-        return {"direction": "HOLD", "score": round(best, 3), "buy": round(buy_score, 3), "sell": round(sell_score, 3), "margin": round(margin, 3), "details": details, "reason": "Alignment too weak"}
+        return {"direction": "HOLD", "score": round(best * 100, 1), "buy": round(buy_score, 3), "sell": round(sell_score, 3), "margin": round(margin, 3), "details": details, "label": "WEAK", "reason": "Alignment too weak"}
 
     if margin < ALIGN_MIN_MARGIN:
-        return {"direction": "HOLD", "score": round(best, 3), "buy": round(buy_score, 3), "sell": round(sell_score, 3), "margin": round(margin, 3), "details": details, "reason": "Alignment unclear"}
+        return {"direction": "HOLD", "score": round(best * 100, 1), "buy": round(buy_score, 3), "sell": round(sell_score, 3), "margin": round(margin, 3), "details": details, "label": "UNCLEAR", "reason": "Alignment unclear"}
 
-    return {"direction": direction, "score": round(best, 3), "buy": round(buy_score, 3), "sell": round(sell_score, 3), "margin": round(margin, 3), "details": details, "reason": "Weighted alignment ok"}
+    label = "STRONG" if best >= 0.70 else "OK"
+    return {"direction": direction, "score": round(best * 100, 1), "buy": round(buy_score, 3), "sell": round(sell_score, 3), "margin": round(margin, 3), "details": details, "label": label, "reason": "Weighted alignment ok"}
 # =========================================================
 # STRUCTURE / ZONES / BOS
 # =========================================================
@@ -1034,12 +1031,6 @@ def bos_confirm(candles: List[Dict[str, float]], direction: str, lookback: int =
 
     last_close = safe_float(candles[-1]["close"])
     return (last_close > lvl) if direction == "BUY" else (last_close < lvl)
-
-
-def in_retest_zone(c: Dict[str, float], level: float, tol: float) -> bool:
-    h = safe_float(c["high"])
-    l = safe_float(c["low"])
-    return (l <= level + tol) and (h >= level - tol)
 
 
 def rejection_ok(last: Dict[str, float], direction: str, zone: Dict[str, float]) -> bool:
@@ -1329,28 +1320,16 @@ def build_trade(
 
     vol_check = volatility_ok(candles_1m, atr_1m)
     if not vol_check.get("ok", True):
-        return {
-            "direction": "HOLD",
-            "confidence": 0,
-            "reason": vol_check.get("reason", "volatility_blocked"),
-        }
+        return {"direction": "HOLD", "confidence": 0, "reason": vol_check.get("reason", "volatility_blocked")}
 
     regime_info = classify_market_regime(candles_1m, atr_1m)
     regime_check = regime_allows_trade(direction, regime_info)
     if not regime_check.get("ok", True):
-        return {
-            "direction": "HOLD",
-            "confidence": 0,
-            "reason": regime_check.get("reason", "regime_blocked"),
-        }
+        return {"direction": "HOLD", "confidence": 0, "reason": regime_check.get("reason", "regime_blocked")}
 
     spike_check = spike_filter_ok(candles_1m, atr_1m)
     if not spike_check.get("ok", True):
-        return {
-            "direction": "HOLD",
-            "confidence": 0,
-            "reason": spike_check.get("reason", "spike_blocked"),
-        }
+        return {"direction": "HOLD", "confidence": 0, "reason": spike_check.get("reason", "spike_blocked")}
 
     liq = detect_liquidity_clusters(candles_1m, atr_1m)
     sweep = liquidity_engine(candles_1m, atr_1m)
@@ -1382,29 +1361,17 @@ def build_trade(
             trap_signal.get("signal") == "BEARISH_TRAP"
             and spike_signal.get("signal") == "BEARISH_SPIKE_REVERSAL"
         ):
-            return {
-                "direction": "HOLD",
-                "confidence": 0,
-                "reason": "blocked_sell_against_strong_uptrend",
-            }
+            return {"direction": "HOLD", "confidence": 0, "reason": "blocked_sell_against_strong_uptrend"}
 
     if direction == "BUY" and strong_downtrend:
         if not (
             trap_signal.get("signal") == "BULLISH_TRAP"
             and spike_signal.get("signal") == "BULLISH_SPIKE_REVERSAL"
         ):
-            return {
-                "direction": "HOLD",
-                "confidence": 0,
-                "reason": "blocked_buy_against_strong_downtrend",
-            }
+            return {"direction": "HOLD", "confidence": 0, "reason": "blocked_buy_against_strong_downtrend"}
 
     if USE_STRUCTURE_FILTER and not structure_matches(direction, structure, sweep, trap_signal):
-        return {
-            "direction": "HOLD",
-            "confidence": 0,
-            "reason": "structure_mismatch",
-        }
+        return {"direction": "HOLD", "confidence": 0, "reason": "structure_mismatch"}
 
     buf = atr_1m * SL_BUFFER_ATR
 
@@ -1420,66 +1387,35 @@ def build_trade(
         return {"direction": "HOLD", "confidence": 0, "reason": "invalid_risk"}
 
     if risk > atr_1m * MAX_SL_ATR:
-        return {
-            "direction": "HOLD",
-            "confidence": 0,
-            "reason": "sl_too_wide_vs_atr",
-        }
+        return {"direction": "HOLD", "confidence": 0, "reason": "sl_too_wide_vs_atr"}
 
     targets = pick_tp1_tp2(direction, entry, atr_1m, zones, risk)
     tp1 = targets.get("tp1")
     tp2 = targets.get("tp2")
 
     if tp2 is None:
-        return {
-            "direction": "HOLD",
-            "confidence": 0,
-            "reason": "no_tp2_available",
-        }
+        return {"direction": "HOLD", "confidence": 0, "reason": "no_tp2_available"}
 
     if tp1 is not None and tp2 is not None and abs(tp2 - tp1) < atr_1m * 0.2:
         tp2 = tp1 + atr_1m * 0.8 if direction == "BUY" else tp1 - atr_1m * 0.8
 
-    quality = market_quality_ok(
-        candles_1m=candles_1m,
-        direction=direction,
-        atr_1m=atr_1m,
-        entry=entry,
-        tp2=tp2,
-        sl=sl,
-    )
+    quality = market_quality_ok(candles_1m, direction, atr_1m, entry, tp2, sl)
     if not quality.get("ok", True):
-        return {
-            "direction": "HOLD",
-            "confidence": 0,
-            "reason": quality.get("reason", "quality_blocked"),
-        }
+        return {"direction": "HOLD", "confidence": 0, "reason": quality.get("reason", "quality_blocked")}
 
     trap_ok = trap_avoidance_ok(direction, entry, atr_1m, liq)
     if not trap_ok.get("ok", True):
-        return {
-            "direction": "HOLD",
-            "confidence": 0,
-            "reason": trap_ok.get("reason", "trap_avoidance_blocked"),
-        }
+        return {"direction": "HOLD", "confidence": 0, "reason": trap_ok.get("reason", "trap_avoidance_blocked")}
 
-    confidence = int(align_score * 100)
-    confidence += liquidity_bonus_points(
-        direction,
-        sweep,
-        trap_signal,
-        spike_signal,
-        vacuum_signal,
-    )
+    confidence = int(align_score)
+    confidence += liquidity_bonus_points(direction, sweep, trap_signal, spike_signal, vacuum_signal)
 
     if direction == "SELL" and strong_uptrend:
         confidence -= 25
-
     if direction == "BUY" and strong_downtrend:
         confidence -= 25
 
     confidence = max(0, min(92, confidence))
-
     score = max(1, min(10, int(confidence / 10)))
     grade = score_to_grade(score)
 
@@ -1525,32 +1461,8 @@ def trail_stop_suggestion(candles_1m: List[Dict[str, float]], direction: str, at
 
     structure = max(safe_float(c["high"]) for c in data)
     return structure + buf
-
-
-def _open_locked_signal(symbol: str, timeframe: str, base_reason: str, bias_info: Dict[str, Any], reg_reason: str, trade_like: Dict[str, Any]) -> Dict[str, Any]:
-    trade_id = str(uuid.uuid4())
-    stored = dict(trade_like)
-
-    stored.update({
-        "trade_id": trade_id,
-        "opened_at": _now_ts(),
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "status": "OPEN",
-        "tp1_hit": False,
-        "mode": "LOCKED_SIGNAL",
-        "entry_type": "LOCKED_SIGNAL",
-        "reason": f"{base_reason}; LOCKED SIGNAL",
-        "progress_pct": 0.0,
-        "meta": {**(stored.get("meta") or {}), "regime_reason": reg_reason, "bias": bias_info},
-    })
-
-    ACTIVE_TRADES[_trade_key(symbol, timeframe)] = stored
-    RISK_STATE["signals_today"][symbol] = int(RISK_STATE["signals_today"].get(symbol, 0)) + 1
-    _push_history(dict(stored))
-    return stored
 # =========================================================
-# ACTIVE TRADE MANAGEMENT / ANALYZE CORE
+# ACTIVE TRADE MANAGEMENT / CORE ANALYZE
 # =========================================================
 async def manage_active_trade(symbol: str, timeframe: str, candles_1m: List[Dict[str, float]], trade: Dict[str, Any]):
     if not trade:
@@ -1566,6 +1478,13 @@ async def manage_active_trade(symbol: str, timeframe: str, candles_1m: List[Dict
     sl = safe_float(trade.get("sl"))
     tp1 = trade.get("tp1")
     tp2 = trade.get("tp2") or trade.get("tp")
+
+    actions: List[Dict[str, Any]] = []
+
+    if (_now_ts() - int(trade.get("opened_at") or 0)) < MIN_HOLD_SECONDS_AFTER_OPEN:
+        if tp2:
+            trade["progress_pct"] = round(trade_progress_percent(direction, entry, sl, tp2, last_close), 2)
+        return trade
 
     if hit_level(direction, last_high, last_low, sl, "SL"):
         trade["status"] = "CLOSED"
@@ -1583,7 +1502,7 @@ async def manage_active_trade(symbol: str, timeframe: str, candles_1m: List[Dict
         if idx is not None:
             TRADE_HISTORY[idx].update(trade)
 
-        return None
+        return {"closed_trade": trade, "signal": {"direction": "HOLD", "confidence": 0, "reason": "Trade closed by SL"}, "active": False, "actions": actions}
 
     if tp1 and not trade.get("tp1_hit"):
         if hit_level(direction, last_high, last_low, tp1, "TP1"):
@@ -1595,6 +1514,8 @@ async def manage_active_trade(symbol: str, timeframe: str, candles_1m: List[Dict
             else:
                 trade["sl"] = entry - (sl - entry) * BE_BUFFER_R
 
+            actions.append({"type": "TP1_HIT"})
+            actions.append({"type": "MOVE_SL", "to": round(trade["sl"], 5)})
             await send_telegram_message(build_tp1_message(symbol, timeframe, trade))
 
     if tp2 and hit_level(direction, last_high, last_low, tp2, "TP2"):
@@ -1611,7 +1532,7 @@ async def manage_active_trade(symbol: str, timeframe: str, candles_1m: List[Dict
         if idx is not None:
             TRADE_HISTORY[idx].update(trade)
 
-        return None
+        return {"closed_trade": trade, "signal": {"direction": "HOLD", "confidence": 0, "reason": "Trade closed by TP2"}, "active": False, "actions": actions}
 
     atr_val = atr_last(candles_1m, ATR_PERIOD)
     if atr_val:
@@ -1620,12 +1541,13 @@ async def manage_active_trade(symbol: str, timeframe: str, candles_1m: List[Dict
             trade["sl"] = max(trade["sl"], new_sl)
         else:
             trade["sl"] = min(trade["sl"], new_sl)
+        actions.append({"type": "TRAIL_SUGGESTION", "to": round(trade["sl"], 5)})
 
     if tp2:
         progress = trade_progress_percent(direction, entry, sl, tp2, last_close)
         trade["progress_pct"] = round(progress, 2)
 
-    return trade
+    return {"signal": trade, "active": True, "actions": actions}
 
 
 async def open_new_trade(symbol: str, timeframe: str, trade_like: Dict[str, Any]):
@@ -1640,6 +1562,8 @@ async def open_new_trade(symbol: str, timeframe: str, trade_like: Dict[str, Any]
         "opened_at": _now_ts(),
         "tp1_hit": False,
         "progress_pct": 0.0,
+        "entry_type": "FAST_ENTRY",
+        "mode": "FAST_ENTRY",
     })
 
     ACTIVE_TRADES[_trade_key(symbol, timeframe)] = trade
@@ -1649,157 +1573,262 @@ async def open_new_trade(symbol: str, timeframe: str, trade_like: Dict[str, Any]
     return trade
 
 
-async def analyze_symbol(symbol: str, timeframe: str = ENTRY_TF) -> Dict[str, Any]:
-    app_id = os.getenv("DERIV_APP_ID", "1089")
+async def analyze_market(req: AnalyzeRequest):
+    _reset_daily_if_needed()
 
+    symbol = req.symbol
+    timeframe = ENTRY_TF
+
+    app_id = os.getenv("DERIV_APP_ID", "1089")
     candles_1m = await _cached_fetch_candles(app_id, symbol, "1m", 260)
     candles_30m = await _cached_fetch_candles(app_id, symbol, "30m", 220)
     candles_1h = await _cached_fetch_candles(app_id, symbol, "1h", 220)
     candles_4h = await _cached_fetch_candles(app_id, symbol, "4h", 220)
 
     if not candles_1m or not candles_30m or not candles_1h or not candles_4h:
-        return {"symbol": symbol, "timeframe": timeframe, "signal": {"direction": "HOLD", "confidence": 0, "reason": "No candles returned"}}
+        return {"symbol": symbol, "timeframe": timeframe, "price": None, "candles": [], "levels": {"supports": [], "resistances": []}, "signal": {"direction": "HOLD", "confidence": 0, "reason": "No candles returned"}, "active": False, "actions": []}
 
     last = candles_1m[-1]
     price = safe_float(last["close"])
     atr_1m = float(atr_last(candles_1m, ATR_PERIOD) or 0.0)
+    zones = strongest_zones(candles_1m, atr_1m)
+
+    levels = {
+        "support_zone": zones.get("support_zone"),
+        "resistance_zone": zones.get("resistance_zone"),
+        "supports": [zones["support_zone"]["mid"]] if zones.get("support_zone") else [],
+        "resistances": [zones["resistance_zone"]["mid"]] if zones.get("resistance_zone") else [],
+    }
+
+    key = _trade_key(symbol, timeframe)
+    if key in ACTIVE_TRADES:
+        managed = await manage_active_trade(symbol, timeframe, candles_1m, ACTIVE_TRADES[key])
+        if managed is None:
+            return {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "price": round(price, 5),
+                "candles": candles_1m,
+                "levels": levels,
+                "signal": {"direction": "HOLD", "confidence": 0, "reason": "trade_closed"},
+                "active": False,
+                "actions": [],
+                "daily_R": RISK_STATE["daily_R"],
+                "active_total": _active_total(),
+                "max_active_total": MAX_ACTIVE_TOTAL,
+            }
+
+        result = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "price": round(price, 5),
+            "candles": candles_1m,
+            "levels": levels,
+            "signal": managed.get("signal", {"direction": "HOLD", "confidence": 0}),
+            "active": managed.get("active", False),
+            "actions": managed.get("actions", []),
+            "daily_R": RISK_STATE["daily_R"],
+            "active_total": _active_total(),
+            "max_active_total": MAX_ACTIVE_TOTAL,
+        }
+        if managed.get("closed_trade"):
+            result["closed_trade"] = managed["closed_trade"]
+        return result
+
+    if _active_total() >= MAX_ACTIVE_TOTAL:
+        return {"symbol": symbol, "timeframe": timeframe, "price": round(price, 5), "candles": candles_1m, "levels": levels, "signal": {"direction": "HOLD", "confidence": 0, "reason": "max_active_trades"}, "active": False, "actions": [], "daily_R": RISK_STATE["daily_R"], "active_total": _active_total(), "max_active_total": MAX_ACTIVE_TOTAL}
+
+    if RISK_STATE["daily_R"] <= DAILY_LOSS_LIMIT_R:
+        return {"symbol": symbol, "timeframe": timeframe, "price": round(price, 5), "candles": candles_1m, "levels": levels, "signal": {"direction": "HOLD", "confidence": 0, "reason": "daily_loss_limit_hit"}, "active": False, "actions": [], "daily_R": RISK_STATE["daily_R"], "active_total": _active_total(), "max_active_total": MAX_ACTIVE_TOTAL}
+
+    if RISK_STATE["signals_today"].get(symbol, 0) >= MAX_SIGNALS_PER_DAY_PER_SYMBOL:
+        return {"symbol": symbol, "timeframe": timeframe, "price": round(price, 5), "candles": candles_1m, "levels": levels, "signal": {"direction": "HOLD", "confidence": 0, "reason": "max_signals_today_symbol"}, "active": False, "actions": [], "daily_R": RISK_STATE["daily_R"], "active_total": _active_total(), "max_active_total": MAX_ACTIVE_TOTAL}
+
+    if symbol in RISK_STATE["cooldown_until"] and _now_ts() < RISK_STATE["cooldown_until"][symbol]:
+        return {"symbol": symbol, "timeframe": timeframe, "price": round(price, 5), "candles": candles_1m, "levels": levels, "signal": {"direction": "HOLD", "confidence": 0, "reason": "cooldown_active"}, "active": False, "actions": [], "daily_R": RISK_STATE["daily_R"], "active_total": _active_total(), "max_active_total": MAX_ACTIVE_TOTAL}
 
     reg = regime_ok(candles_1m)
     if not reg.get("ok", True):
-        return {"symbol": symbol, "timeframe": timeframe, "price": round(price, 5), "signal": {"direction": "HOLD", "confidence": 0, "reason": reg.get("reason")}}
+        return {"symbol": symbol, "timeframe": timeframe, "price": round(price, 5), "candles": candles_1m, "levels": levels, "signal": {"direction": "HOLD", "confidence": 0, "reason": reg.get("reason")}, "active": False, "actions": [], "daily_R": RISK_STATE["daily_R"], "active_total": _active_total(), "max_active_total": MAX_ACTIVE_TOTAL}
 
     align = weighted_alignment({"30m": candles_30m, "1h": candles_1h, "4h": candles_4h})
     direction = align.get("direction", "HOLD")
 
     if direction == "HOLD":
-        return {"symbol": symbol, "timeframe": timeframe, "price": round(price, 5), "signal": {"direction": "HOLD", "confidence": 0, "reason": align.get("reason", "alignment_hold")}}
+        return {"symbol": symbol, "timeframe": timeframe, "price": round(price, 5), "candles": candles_1m, "levels": levels, "signal": {"direction": "HOLD", "confidence": 0, "reason": align.get("reason", "alignment_hold")}, "alignment": align, "active": False, "actions": [], "daily_R": RISK_STATE["daily_R"], "active_total": _active_total(), "max_active_total": MAX_ACTIVE_TOTAL}
 
-    zones = strongest_zones(candles_1m, atr_1m)
     trade = build_trade(candles_1m, direction, zones, atr_1m, float(align.get("score", 0.0)))
 
-    if trade.get("direction") == "HOLD":
-        return {"symbol": symbol, "timeframe": timeframe, "price": round(price, 5), "signal": trade, "zones": zones}
-
-    return {"symbol": symbol, "timeframe": timeframe, "price": round(price, 5), "signal": trade, "zones": zones}
+    return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "price": round(price, 5),
+        "candles": candles_1m,
+        "levels": levels,
+        "signal": trade,
+        "alignment": align,
+        "active": False,
+        "actions": [],
+        "daily_R": RISK_STATE["daily_R"],
+        "active_total": _active_total(),
+        "max_active_total": MAX_ACTIVE_TOTAL,
+    }
 # =========================================================
 # ROUTES
 # =========================================================
-@router.get("/telegram-test")
-async def telegram_test() -> Dict[str, Any]:
-    ok = await send_telegram_message("✅ DEXTRADEZ BOT Telegram test works")
-    return {"ok": ok}
-
-
-@router.get("/daily-report")
-async def daily_report() -> Dict[str, Any]:
-    ok = await send_telegram_message(build_daily_report_message())
-    return {"ok": ok}
-
-
-@router.get("/telegram-performance")
-async def telegram_performance() -> Dict[str, Any]:
-    ok = await send_telegram_message(build_daily_report_message())
-    return {"ok": ok}
-
-
-@router.get("/telegram-active")
-async def telegram_active() -> Dict[str, Any]:
-    if not ACTIVE_TRADES:
-        ok = await send_telegram_message("📭 No active trades right now.")
-        return {"ok": ok}
-
-    lines = ["📌 ACTIVE TRADES\n"]
-    for _, t in ACTIVE_TRADES.items():
-        lines.append(f"{t.get('symbol')} {t.get('direction')} | Entry {t.get('entry')} | SL {t.get('sl')} | TP2 {t.get('tp2', t.get('tp'))}")
-
-    ok = await send_telegram_message("\n".join(lines))
-    return {"ok": ok}
-
-
 @router.post("/analyze")
 async def analyze(req: AnalyzeRequest):
-    _reset_daily_if_needed()
+    result = await analyze_market(req)
 
-    symbol = req.symbol
-    timeframe = req.timeframe
-
-    if _active_total() >= MAX_ACTIVE_TOTAL:
-        return {"direction": "HOLD", "reason": "max_active_trades"}
-
-    if RISK_STATE["daily_R"] <= DAILY_LOSS_LIMIT_R:
-        return {"direction": "HOLD", "reason": "daily_loss_limit_hit"}
-
-    if RISK_STATE["signals_today"].get(symbol, 0) >= MAX_SIGNALS_PER_DAY_PER_SYMBOL:
-        return {"direction": "HOLD", "reason": "max_signals_today_symbol"}
-
-    if symbol in RISK_STATE["cooldown_until"] and _now_ts() < RISK_STATE["cooldown_until"][symbol]:
-        return {"direction": "HOLD", "reason": "cooldown_active"}
-
-    app_id = os.getenv("DERIV_APP_ID", "1089")
-    candles_1m = await _cached_fetch_candles(app_id, symbol, "1m", 260)
-
-    if len(candles_1m) < 120:
-        return {"direction": "HOLD", "reason": "not_enough_candles"}
-
-    key = _trade_key(symbol, timeframe)
-
-    if key in ACTIVE_TRADES:
-        trade = await manage_active_trade(symbol, timeframe, candles_1m, ACTIVE_TRADES[key])
-        return trade or {"direction": "HOLD", "reason": "trade_closed"}
-
-    result = await analyze_symbol(symbol, timeframe)
     signal = result.get("signal", {})
+    if signal.get("direction") in ("BUY", "SELL") and not result.get("active", False):
+        symbol = req.symbol
+        timeframe = ENTRY_TF
+        candles_1m = result.get("candles", [])
+        levels = result.get("levels", {})
+        last = candles_1m[-1] if candles_1m else None
 
-    if signal.get("direction") == "HOLD":
-        return result
+        if last:
+            rej_zone = levels.get("support_zone") if signal.get("direction") == "BUY" else levels.get("resistance_zone")
+            if rej_zone is None:
+                rej_zone = levels.get("support_zone") or levels.get("resistance_zone")
 
-    last = candles_1m[-1]
-    zones = result.get("zones", {})
-    rej_zone = zones.get("support_zone") if signal.get("direction") == "BUY" else zones.get("resistance_zone")
-    fast_rej_ok = rejection_ok(last, signal.get("direction"), rej_zone) if rej_zone else False
-    fast_bos_ok = bos_confirm(candles_1m, signal.get("direction"), BOS_LOOKBACK)
-    momentum_dir = momentum_breakout(candles_1m)
-    atr_val = float(atr_last(candles_1m, ATR_PERIOD) or 0.0)
-    trap_signal = smart_trap_detector(candles_1m, atr_val)
-    spike_signal = spike_reversal_engine(candles_1m, atr_val)
-    vacuum_signal = liquidity_vacuum_detector(candles_1m, atr_val)
+            fast_rej_ok = False
+            if rej_zone:
+                fast_rej_ok = rejection_ok(last, signal.get("direction"), rej_zone)
 
-    can_fast_enter = (
-        ENABLE_FAST_ENTRY
-        and signal.get("direction") in ("BUY", "SELL")
-        and int(signal.get("confidence", 0)) >= FAST_ENTRY_MIN_CONF
-        and (
-            fast_rej_ok
-            or fast_bos_ok
-            or momentum_dir == signal.get("direction")
-            or (trap_signal.get("signal") == "BULLISH_TRAP" and signal.get("direction") == "BUY")
-            or (trap_signal.get("signal") == "BEARISH_TRAP" and signal.get("direction") == "SELL")
-            or (spike_signal.get("signal") == "BULLISH_SPIKE_REVERSAL" and signal.get("direction") == "BUY")
-            or (spike_signal.get("signal") == "BEARISH_SPIKE_REVERSAL" and signal.get("direction") == "SELL")
-            or (vacuum_signal.get("signal") == "BULLISH_VACUUM" and signal.get("direction") == "BUY")
-            or (vacuum_signal.get("signal") == "BEARISH_VACUUM" and signal.get("direction") == "SELL")
-        )
-    )
+            fast_bos_ok = bos_confirm(candles_1m, signal.get("direction"), BOS_LOOKBACK)
+            momentum_dir = momentum_breakout(candles_1m)
+            atr_val = float(atr_last(candles_1m, ATR_PERIOD) or 0.0)
+            trap_signal = smart_trap_detector(candles_1m, atr_val)
+            spike_signal = spike_reversal_engine(candles_1m, atr_val)
+            vacuum_signal = liquidity_vacuum_detector(candles_1m, atr_val)
 
-    if not can_fast_enter:
-        return result
+            can_fast_enter = (
+                ENABLE_FAST_ENTRY
+                and int(signal.get("confidence", 0)) >= FAST_ENTRY_MIN_CONF
+                and (
+                    fast_rej_ok
+                    or fast_bos_ok
+                    or momentum_dir == signal.get("direction")
+                    or (trap_signal.get("signal") == "BULLISH_TRAP" and signal.get("direction") == "BUY")
+                    or (trap_signal.get("signal") == "BEARISH_TRAP" and signal.get("direction") == "SELL")
+                    or (spike_signal.get("signal") == "BULLISH_SPIKE_REVERSAL" and signal.get("direction") == "BUY")
+                    or (spike_signal.get("signal") == "BEARISH_SPIKE_REVERSAL" and signal.get("direction") == "SELL")
+                    or (vacuum_signal.get("signal") == "BULLISH_VACUUM" and signal.get("direction") == "BUY")
+                    or (vacuum_signal.get("signal") == "BEARISH_VACUUM" and signal.get("direction") == "SELL")
+                )
+            )
 
-    new_trade = await open_new_trade(symbol, timeframe, signal)
-    return new_trade
+            if can_fast_enter:
+                new_trade = await open_new_trade(symbol, timeframe, signal)
+                result["signal"] = new_trade
+                result["active"] = True
+
+    return result
 
 
 @router.post("/scan")
 async def scan(req: ScanRequest):
-    results = []
+    _reset_daily_if_needed()
 
-    for symbol in req.symbols:
+    rows: List[Dict[str, Any]] = []
+    for sym in req.symbols:
         try:
-            res = await analyze(AnalyzeRequest(symbol=symbol, timeframe=req.timeframe))
-            results.append({"symbol": symbol, "result": res})
+            res = await analyze_market(AnalyzeRequest(symbol=sym, timeframe="1m"))
+            sig = res.get("signal", {})
+            rows.append({
+                "symbol": sym,
+                "direction": sig.get("direction", "HOLD"),
+                "confidence": int(sig.get("confidence", 0)),
+                "score_1_10": int(sig.get("score_1_10", 0)),
+                "grade": sig.get("grade", "IGNORE"),
+                "reason": sig.get("reason", ""),
+                "entry": sig.get("entry"),
+                "sl": sig.get("sl"),
+                "tp": sig.get("tp2", sig.get("tp")),
+                "tp1": sig.get("tp1"),
+                "tp2": sig.get("tp2"),
+                "entry_type": sig.get("entry_type", sig.get("mode", "")),
+                "active_trade": bool(res.get("active", False)),
+                "pending": False,
+            })
         except Exception as e:
-            results.append({"symbol": symbol, "result": {"direction": "HOLD", "reason": str(e)}})
+            rows.append({
+                "symbol": sym,
+                "direction": "HOLD",
+                "confidence": 0,
+                "score_1_10": 0,
+                "grade": "IGNORE",
+                "reason": str(e),
+                "entry": None,
+                "sl": None,
+                "tp": None,
+                "tp1": None,
+                "tp2": None,
+                "entry_type": "",
+                "active_trade": False,
+                "pending": False,
+            })
 
-    return {"results": results}
+    rows.sort(key=lambda x: (x.get("score_1_10", 0), x.get("confidence", 0)), reverse=True)
+
+    return {
+        "ranked": rows,
+        "daily_R": RISK_STATE["daily_R"],
+        "active_total": _active_total(),
+        "max_active_total": MAX_ACTIVE_TOTAL,
+    }
+
+
+@router.get("/live")
+async def live_market(symbol: str = "R_10", timeframe: str = "1m") -> Dict[str, Any]:
+    app_id = os.getenv("DERIV_APP_ID", "1089")
+
+    candles = await _cached_fetch_candles(app_id, symbol, timeframe, 260)
+    if not candles:
+        return {"ok": False, "error": "No candles returned", "symbol": symbol, "timeframe": timeframe}
+
+    last = candles[-1]
+    last_close = safe_float(last["close"])
+
+    atr_val = float(atr_last(candles, ATR_PERIOD) or 0.0)
+    zones = strongest_zones(candles, atr_val) if atr_val > 0 else {
+        "support_zone": None,
+        "resistance_zone": None,
+        "support_zones": [],
+        "resistance_zones": [],
+    }
+
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "price": round(last_close, 5),
+        "candles": candles,
+        "levels": {
+            "support_zone": zones.get("support_zone"),
+            "resistance_zone": zones.get("resistance_zone"),
+            "supports": [zones["support_zone"]["mid"]] if zones.get("support_zone") else [],
+            "resistances": [zones["resistance_zone"]["mid"]] if zones.get("resistance_zone") else [],
+        },
+        "updated_at": _now_ts(),
+    }
+
+
+@router.get("/history")
+async def history(symbol: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+    limit = max(1, min(int(limit), 500))
+    items = TRADE_HISTORY
+    if symbol:
+        items = [t for t in items if t.get("symbol") == symbol.strip()]
+    return {"count": len(items[-limit:]), "items": items[-limit:]}
+
+
+@router.get("/performance")
+async def performance(last_n: int = PERFORMANCE_REVIEW_N) -> Dict[str, Any]:
+    return _performance(last_n)
+
 
 @router.websocket("/ws")
 async def websocket_live(ws: WebSocket):
@@ -1810,18 +1839,13 @@ async def websocket_live(ws: WebSocket):
         msg = json.loads(raw)
 
         symbol = (msg.get("symbol") or "R_10").strip()
-        timeframe = (msg.get("timeframe") or ENTRY_TF).strip()
+        timeframe = "1m"
 
         app_id = os.getenv("DERIV_APP_ID", "1089")
         last_sent_candle_time = None
 
         while True:
-            candles = await _cached_fetch_candles(
-                app_id=app_id,
-                symbol=symbol,
-                timeframe=timeframe,
-                count=260,
-            )
+            candles = await _cached_fetch_candles(app_id, symbol, timeframe, 260)
 
             if candles:
                 last = candles[-1]
@@ -1872,48 +1896,3 @@ async def websocket_live(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
-
-@router.get("/live")
-async def live_market(symbol: str = "R_10", timeframe: str = "1m") -> Dict[str, Any]:
-    app_id = os.getenv("DERIV_APP_ID", "1089")
-
-    candles = await _cached_fetch_candles(
-        app_id=app_id,
-        symbol=symbol,
-        timeframe=timeframe,
-        count=260,
-    )
-
-    if not candles:
-        return {"ok": False, "error": "No candles returned", "symbol": symbol, "timeframe": timeframe}
-
-    last = candles[-1]
-    last_close = safe_float(last["close"])
-
-    atr_val = float(atr_last(candles, ATR_PERIOD) or 0.0)
-    zones = strongest_zones(candles, atr_val) if atr_val > 0 else {
-        "support_zone": None,
-        "resistance_zone": None,
-        "support_zones": [],
-        "resistance_zones": [],
-    }
-
-    levels = {
-        "support_zone": zones.get("support_zone"),
-        "resistance_zone": zones.get("resistance_zone"),
-        "supports": [zones["support_zone"]["mid"]] if zones.get("support_zone") else [],
-        "resistances": [zones["resistance_zone"]["mid"]] if zones.get("resistance_zone") else [],
-    }
-
-    return {
-        "ok": True,
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "price": round(last_close, 5),
-        "candles": candles,
-        "levels": levels,
-        "updated_at": _now_ts(),
-    }
- # Backward compatibility aliases
-analyze_market = analyze
-scan_markets = scan
