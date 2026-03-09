@@ -1801,24 +1801,119 @@ async def scan(req: ScanRequest):
 
     return {"results": results}
 
-
-@router.websocket("/live")
-async def live_feed(ws: WebSocket):
+@router.websocket("/ws")
+async def websocket_live(ws: WebSocket):
     await ws.accept()
 
     try:
+        raw = await ws.receive_text()
+        msg = json.loads(raw)
+
+        symbol = (msg.get("symbol") or "R_10").strip()
+        timeframe = (msg.get("timeframe") or ENTRY_TF).strip()
+
+        app_id = os.getenv("DERIV_APP_ID", "1089")
+        last_sent_candle_time = None
+
         while True:
-            payload = {
-                "active_trades": list(ACTIVE_TRADES.values()),
-                "daily_R": RISK_STATE["daily_R"],
-                "history": TRADE_HISTORY[-50:],
-                "timestamp": _now_ts(),
-            }
-            await ws.send_text(json.dumps(payload))
-            await asyncio.sleep(2)
+            candles = await _cached_fetch_candles(
+                app_id=app_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                count=260,
+            )
+
+            if candles:
+                last = candles[-1]
+                last_close = safe_float(last["close"])
+                last_time = last.get("time") or last.get("epoch") or last.get("t")
+
+                atr_val = float(atr_last(candles, ATR_PERIOD) or 0.0)
+                zones = strongest_zones(candles, atr_val) if atr_val > 0 else {
+                    "support_zone": None,
+                    "resistance_zone": None,
+                    "support_zones": [],
+                    "resistance_zones": [],
+                }
+
+                levels = {
+                    "support_zone": zones.get("support_zone"),
+                    "resistance_zone": zones.get("resistance_zone"),
+                    "supports": [zones["support_zone"]["mid"]] if zones.get("support_zone") else [],
+                    "resistances": [zones["resistance_zone"]["mid"]] if zones.get("resistance_zone") else [],
+                }
+
+                if last_sent_candle_time != last_time:
+                    await ws.send_json({
+                        "type": "live_chart",
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "price": round(last_close, 5),
+                        "candles": candles,
+                        "levels": levels,
+                        "updated_at": _now_ts(),
+                    })
+                    last_sent_candle_time = last_time
+                else:
+                    await ws.send_json({
+                        "type": "live_tick",
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "price": round(last_close, 5),
+                        "updated_at": _now_ts(),
+                    })
+
+            await asyncio.sleep(3)
 
     except WebSocketDisconnect:
         pass
+    except Exception:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+@router.get("/live")
+async def live_market(symbol: str = "R_10", timeframe: str = "1m") -> Dict[str, Any]:
+    app_id = os.getenv("DERIV_APP_ID", "1089")
+
+    candles = await _cached_fetch_candles(
+        app_id=app_id,
+        symbol=symbol,
+        timeframe=timeframe,
+        count=260,
+    )
+
+    if not candles:
+        return {"ok": False, "error": "No candles returned", "symbol": symbol, "timeframe": timeframe}
+
+    last = candles[-1]
+    last_close = safe_float(last["close"])
+
+    atr_val = float(atr_last(candles, ATR_PERIOD) or 0.0)
+    zones = strongest_zones(candles, atr_val) if atr_val > 0 else {
+        "support_zone": None,
+        "resistance_zone": None,
+        "support_zones": [],
+        "resistance_zones": [],
+    }
+
+    levels = {
+        "support_zone": zones.get("support_zone"),
+        "resistance_zone": zones.get("resistance_zone"),
+        "supports": [zones["support_zone"]["mid"]] if zones.get("support_zone") else [],
+        "resistances": [zones["resistance_zone"]["mid"]] if zones.get("resistance_zone") else [],
+    }
+
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "price": round(last_close, 5),
+        "candles": candles,
+        "levels": levels,
+        "updated_at": _now_ts(),
+    }
  # Backward compatibility aliases
 analyze_market = analyze
 scan_markets = scan
