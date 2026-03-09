@@ -373,8 +373,8 @@ def build_daily_report_message() -> str:
         f"Win Rate: {perf.get('win_rate', 0)}%\n"
         f"Avg R: {perf.get('avg_R', 0)}\n"
         f"Total R: {perf.get('total_R', 0)}"
-    ) 
- # =========================================================
+    )   
+# =========================================================
 # INDICATORS
 # =========================================================
 def ema_last(values: List[float], period: int) -> Optional[float]:
@@ -509,7 +509,7 @@ def recent_swing_low(candles: List[Dict[str, float]], lookback: int = 20) -> flo
 
 
 def recent_swing_high(candles: List[Dict[str, float]], lookback: int = 20) -> float:
-    return max(safe_float(c["high"]) for c in candles[-lookback:]) 
+    return max(safe_float(c["high"]) for c in candles[-lookback:])
 # =========================================================
 # VOLATILITY / SPIKE / MOMENTUM
 # =========================================================
@@ -1006,7 +1006,6 @@ def strongest_zones(candles: List[Dict[str, float]], atr_value: float) -> Dict[s
         "resistance_zone": res_zones[0] if res_zones else None,
         "support_zones": sup_zones[:RETURN_TOP_ZONES],
         "resistance_zones": res_zones[:RETURN_TOP_ZONES],
-        "zone_width": zone_width,
     }
 
 
@@ -1021,13 +1020,10 @@ def bos_level(candles: List[Dict[str, float]], direction: str, lookback: int = B
         return None
 
     recent = candles[-(lookback + 1) : -1]
-
     if direction == "BUY":
         return max(safe_float(c["high"]) for c in recent)
-
     if direction == "SELL":
         return min(safe_float(c["low"]) for c in recent)
-
     return None
 
 
@@ -1068,7 +1064,6 @@ def rejection_ok(last: Dict[str, float], direction: str, zone: Dict[str, float])
     wick_into = h >= zlow
     close_out = cl <= zlow if REJECTION_CLOSE_OUTSIDE_ZONE else cl <= zhigh
     return is_bearish(last) and wick_into and close_out and body_ok and wick_ok
-
 # =========================================================
 # LIQUIDITY CLUSTERS / TARGETS / QUALITY / SCORING
 # =========================================================
@@ -1318,7 +1313,14 @@ def liquidity_bonus_points(
 # =========================================================
 # TRADE BUILDER / ACTIVE TRADE HELPERS
 # =========================================================
-def build_trade(candles_1m: List[Dict[str, float]], direction: str, zones: Dict[str, Any], atr_1m: float, align_score: float) -> Dict[str, Any]:
+def build_trade(
+    candles_1m: List[Dict[str, float]],
+    direction: str,
+    zones: Dict[str, Any],
+    atr_1m: float,
+    align_score: float,
+) -> Dict[str, Any]:
+
     if direction not in ("BUY", "SELL"):
         return {"direction": "HOLD", "confidence": 0, "reason": "invalid_direction"}
 
@@ -1327,16 +1329,28 @@ def build_trade(candles_1m: List[Dict[str, float]], direction: str, zones: Dict[
 
     vol_check = volatility_ok(candles_1m, atr_1m)
     if not vol_check.get("ok", True):
-        return {"direction": "HOLD", "confidence": 0, "reason": vol_check.get("reason", "volatility_blocked")}
+        return {
+            "direction": "HOLD",
+            "confidence": 0,
+            "reason": vol_check.get("reason", "volatility_blocked"),
+        }
 
     regime_info = classify_market_regime(candles_1m, atr_1m)
     regime_check = regime_allows_trade(direction, regime_info)
     if not regime_check.get("ok", True):
-        return {"direction": "HOLD", "confidence": 0, "reason": regime_check.get("reason", "regime_blocked")}
+        return {
+            "direction": "HOLD",
+            "confidence": 0,
+            "reason": regime_check.get("reason", "regime_blocked"),
+        }
 
     spike_check = spike_filter_ok(candles_1m, atr_1m)
     if not spike_check.get("ok", True):
-        return {"direction": "HOLD", "confidence": 0, "reason": spike_check.get("reason", "spike_blocked")}
+        return {
+            "direction": "HOLD",
+            "confidence": 0,
+            "reason": spike_check.get("reason", "spike_blocked"),
+        }
 
     liq = detect_liquidity_clusters(candles_1m, atr_1m)
     sweep = liquidity_engine(candles_1m, atr_1m)
@@ -1345,8 +1359,52 @@ def build_trade(candles_1m: List[Dict[str, float]], direction: str, zones: Dict[
     vacuum_signal = liquidity_vacuum_detector(candles_1m, atr_1m)
     structure = market_structure_state(candles_1m)
 
+    closes = [safe_float(c["close"]) for c in candles_1m]
+    ema20_now = ema_last(closes, 20)
+    ema50_now = ema_last(closes, 50)
+
+    strong_uptrend = (
+        ema20_now is not None
+        and ema50_now is not None
+        and ema20_now > ema50_now
+        and (ema20_now - ema50_now) > atr_1m * 0.6
+    )
+
+    strong_downtrend = (
+        ema20_now is not None
+        and ema50_now is not None
+        and ema20_now < ema50_now
+        and (ema50_now - ema20_now) > atr_1m * 0.6
+    )
+
+    if direction == "SELL" and strong_uptrend:
+        if not (
+            trap_signal.get("signal") == "BEARISH_TRAP"
+            and spike_signal.get("signal") == "BEARISH_SPIKE_REVERSAL"
+        ):
+            return {
+                "direction": "HOLD",
+                "confidence": 0,
+                "reason": "blocked_sell_against_strong_uptrend",
+            }
+
+    if direction == "BUY" and strong_downtrend:
+        if not (
+            trap_signal.get("signal") == "BULLISH_TRAP"
+            and spike_signal.get("signal") == "BULLISH_SPIKE_REVERSAL"
+        ):
+            return {
+                "direction": "HOLD",
+                "confidence": 0,
+                "reason": "blocked_buy_against_strong_downtrend",
+            }
+
     if USE_STRUCTURE_FILTER and not structure_matches(direction, structure, sweep, trap_signal):
-        return {"direction": "HOLD", "confidence": 0, "reason": "structure_mismatch"}
+        return {
+            "direction": "HOLD",
+            "confidence": 0,
+            "reason": "structure_mismatch",
+        }
 
     buf = atr_1m * SL_BUFFER_ATR
 
@@ -1362,14 +1420,25 @@ def build_trade(candles_1m: List[Dict[str, float]], direction: str, zones: Dict[
         return {"direction": "HOLD", "confidence": 0, "reason": "invalid_risk"}
 
     if risk > atr_1m * MAX_SL_ATR:
-        return {"direction": "HOLD", "confidence": 0, "reason": "sl_too_wide_vs_atr"}
+        return {
+            "direction": "HOLD",
+            "confidence": 0,
+            "reason": "sl_too_wide_vs_atr",
+        }
 
     targets = pick_tp1_tp2(direction, entry, atr_1m, zones, risk)
     tp1 = targets.get("tp1")
     tp2 = targets.get("tp2")
 
     if tp2 is None:
-        return {"direction": "HOLD", "confidence": 0, "reason": "no_tp2_available"}
+        return {
+            "direction": "HOLD",
+            "confidence": 0,
+            "reason": "no_tp2_available",
+        }
+
+    if tp1 is not None and tp2 is not None and abs(tp2 - tp1) < atr_1m * 0.2:
+        tp2 = tp1 + atr_1m * 0.8 if direction == "BUY" else tp1 - atr_1m * 0.8
 
     quality = market_quality_ok(
         candles_1m=candles_1m,
@@ -1380,15 +1449,36 @@ def build_trade(candles_1m: List[Dict[str, float]], direction: str, zones: Dict[
         sl=sl,
     )
     if not quality.get("ok", True):
-        return {"direction": "HOLD", "confidence": 0, "reason": quality.get("reason", "quality_blocked")}
+        return {
+            "direction": "HOLD",
+            "confidence": 0,
+            "reason": quality.get("reason", "quality_blocked"),
+        }
 
     trap_ok = trap_avoidance_ok(direction, entry, atr_1m, liq)
     if not trap_ok.get("ok", True):
-        return {"direction": "HOLD", "confidence": 0, "reason": trap_ok.get("reason", "trap_avoidance_blocked")}
+        return {
+            "direction": "HOLD",
+            "confidence": 0,
+            "reason": trap_ok.get("reason", "trap_avoidance_blocked"),
+        }
 
     confidence = int(align_score * 100)
-    confidence += liquidity_bonus_points(direction, sweep, trap_signal, spike_signal, vacuum_signal)
-    confidence = max(0, min(100, confidence))
+    confidence += liquidity_bonus_points(
+        direction,
+        sweep,
+        trap_signal,
+        spike_signal,
+        vacuum_signal,
+    )
+
+    if direction == "SELL" and strong_uptrend:
+        confidence -= 25
+
+    if direction == "BUY" and strong_downtrend:
+        confidence -= 25
+
+    confidence = max(0, min(92, confidence))
 
     score = max(1, min(10, int(confidence / 10)))
     grade = score_to_grade(score)
@@ -1413,6 +1503,8 @@ def build_trade(candles_1m: List[Dict[str, float]], direction: str, zones: Dict[
             "spike_signal": spike_signal,
             "vacuum_signal": vacuum_signal,
             "liquidity_clusters": liq,
+            "strong_uptrend": strong_uptrend,
+            "strong_downtrend": strong_downtrend,
         },
     }
 
