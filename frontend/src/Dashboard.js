@@ -21,28 +21,32 @@ const TIMEFRAMES = [
   { value: "4h", label: "4h" },
 ];
 
-const LS_KEY_STATE = "dex_bot_ui_state_v1";
+const LS_KEY_STATE = "dex_bot_ui_state_v2";
 const LS_KEY_HISTORY = "dex_bot_history_v1";
 
 function safeNum(x, fallback = 0) {
   const n = Number(x);
   return Number.isFinite(n) ? n : fallback;
 }
+
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
 }
+
 function fmt(x, digits = 5) {
   if (x === null || x === undefined) return "-";
   const n = Number(x);
   if (!Number.isFinite(n)) return String(x);
   return n.toFixed(digits);
 }
+
 function toIso(tsSec) {
   if (!tsSec) return "—";
   const ms = Number(tsSec) * 1000;
   if (!Number.isFinite(ms)) return "—";
   return new Date(ms).toLocaleString();
 }
+
 function withTimeout(promise, ms, label = "Request") {
   let t = null;
   const timeout = new Promise((_, reject) => {
@@ -100,6 +104,30 @@ function normalizeAlignment(raw) {
   };
 }
 
+function normalizeBriefing(brief = {}) {
+  return {
+    bias: brief?.bias ?? "-",
+    structure: brief?.structure ?? "-",
+    previousTrend: brief?.previous_trend ?? "-",
+    trendStrength:
+      brief?.trend_strength === 0 || brief?.trend_strength
+        ? brief.trend_strength
+        : null,
+    marketState: brief?.market_state ?? "-",
+    reversalRisk: brief?.reversal_risk ?? "-",
+    support: brief?.support ?? "-",
+    resistance: brief?.resistance ?? "-",
+    buyerZone: brief?.buyer_zone ?? "-",
+    sellerZone: brief?.seller_zone ?? "-",
+    liquidityBelow: brief?.liquidity_below ?? "-",
+    liquidityAbove: brief?.liquidity_above ?? "-",
+    areaOfInterest: brief?.area_of_interest ?? "-",
+    preferredSetup: brief?.preferred_setup ?? "-",
+    confirmationNeeded: brief?.confirmation_needed ?? "-",
+    invalidation: brief?.invalidation ?? "-",
+  };
+}
+
 function normalizeAnalyzeResponse(data) {
   const candles = Array.isArray(data?.candles) ? data.candles : [];
 
@@ -119,6 +147,7 @@ function normalizeAnalyzeResponse(data) {
   const direction = sig?.direction || sig?.action || "HOLD";
   const confidence = safeNum(sig?.confidence ?? sig?.score ?? 0, 0);
   const alignment = normalizeAlignment(data);
+  const briefing = normalizeBriefing(data?.briefing || {});
 
   const maxActive =
     safeNum(data?.max_active_total ?? data?.limits?.max_active_total ?? 5, 5) || 5;
@@ -140,6 +169,7 @@ function normalizeAnalyzeResponse(data) {
     price: data?.price ?? sig?.price ?? null,
     entryType: pickModeLabel(sig),
     alignment,
+    briefing,
     active: !!data?.active,
     actions: Array.isArray(data?.actions) ? data.actions : [],
     pending: data?.pending ?? null,
@@ -271,6 +301,23 @@ export default function Dashboard() {
   const [alignmentLabel, setAlignmentLabel] = useState(restored?.alignmentLabel ?? null);
   const [alignmentDetails, setAlignmentDetails] = useState(restored?.alignmentDetails || []);
 
+  const [bias, setBias] = useState(restored?.bias || "-");
+  const [structure, setStructure] = useState(restored?.structure || "-");
+  const [previousTrend, setPreviousTrend] = useState(restored?.previousTrend || "-");
+  const [trendStrength, setTrendStrength] = useState(restored?.trendStrength ?? null);
+  const [marketState, setMarketState] = useState(restored?.marketState || "-");
+  const [reversalRisk, setReversalRisk] = useState(restored?.reversalRisk || "-");
+  const [buyerZone, setBuyerZone] = useState(restored?.buyerZone || "-");
+  const [sellerZone, setSellerZone] = useState(restored?.sellerZone || "-");
+  const [areaOfInterest, setAreaOfInterest] = useState(restored?.areaOfInterest || "-");
+  const [confirmationNeeded, setConfirmationNeeded] = useState(restored?.confirmationNeeded || "-");
+  const [preferredSetup, setPreferredSetup] = useState(restored?.preferredSetup || "-");
+  const [invalidation, setInvalidation] = useState(restored?.invalidation || "-");
+  const [briefSupport, setBriefSupport] = useState(restored?.briefSupport || "-");
+  const [briefResistance, setBriefResistance] = useState(restored?.briefResistance || "-");
+  const [liquidityBelow, setLiquidityBelow] = useState(restored?.liquidityBelow || "-");
+  const [liquidityAbove, setLiquidityAbove] = useState(restored?.liquidityAbove || "-");
+
   const [scanLoading, setScanLoading] = useState(false);
   const [ranked, setRanked] = useState(restored?.ranked || []);
   const [dailyR, setDailyR] = useState(restored?.dailyR || 0);
@@ -334,6 +381,22 @@ export default function Dashboard() {
           alignmentScore,
           alignmentLabel,
           alignmentDetails,
+          bias,
+          structure,
+          previousTrend,
+          trendStrength,
+          marketState,
+          reversalRisk,
+          buyerZone,
+          sellerZone,
+          areaOfInterest,
+          confirmationNeeded,
+          preferredSetup,
+          invalidation,
+          briefSupport,
+          briefResistance,
+          liquidityBelow,
+          liquidityAbove,
           ranked,
           dailyR,
           activeTotal,
@@ -370,6 +433,22 @@ export default function Dashboard() {
     alignmentScore,
     alignmentLabel,
     alignmentDetails,
+    bias,
+    structure,
+    previousTrend,
+    trendStrength,
+    marketState,
+    reversalRisk,
+    buyerZone,
+    sellerZone,
+    areaOfInterest,
+    confirmationNeeded,
+    preferredSetup,
+    invalidation,
+    briefSupport,
+    briefResistance,
+    liquidityBelow,
+    liquidityAbove,
     ranked,
     dailyR,
     activeTotal,
@@ -425,6 +504,22 @@ export default function Dashboard() {
     setAlignmentScore(null);
     setAlignmentLabel(null);
     setAlignmentDetails([]);
+    setBias("-");
+    setStructure("-");
+    setPreviousTrend("-");
+    setTrendStrength(null);
+    setMarketState("-");
+    setReversalRisk("-");
+    setBuyerZone("-");
+    setSellerZone("-");
+    setAreaOfInterest("-");
+    setConfirmationNeeded("-");
+    setPreferredSetup("-");
+    setInvalidation("-");
+    setBriefSupport("-");
+    setBriefResistance("-");
+    setLiquidityBelow("-");
+    setLiquidityAbove("-");
     setLastActions([]);
     setStatus("ANALYZING");
     setError("");
@@ -435,10 +530,10 @@ export default function Dashboard() {
     const candidates = ranked
       .filter((r) => (r.direction === "BUY" || r.direction === "SELL") && safeNum(r.confidence, 0) > 0)
       .sort((a, b) => {
-        const ar = safeNum(a.score_1_10 ?? a.rank ?? 0, 0);
-        const br = safeNum(b.score_1_10 ?? b.rank ?? 0, 0);
-        if (br !== ar) return br - ar;
-        return safeNum(b.confidence, 0) - safeNum(a.confidence, 0);
+        const ac = safeNum(a.confidence, 0);
+        const bc = safeNum(b.confidence, 0);
+        if (bc !== ac) return bc - ac;
+        return (b.market_state === "TRENDING CLEAN") - (a.market_state === "TRENDING CLEAN");
       });
 
     return candidates[0] || null;
@@ -448,6 +543,20 @@ export default function Dashboard() {
     alignmentScore !== null
       ? `${alignmentLabel ? `${alignmentLabel} ` : ""}${Math.round(alignmentScore)}%`
       : null;
+
+  const marketStateTone =
+    marketState === "TRENDING CLEAN"
+      ? "pillWin"
+      : marketState === "REVERSAL RISK" || marketState === "CHOPPY / NO-TRADE"
+      ? "pillLoss"
+      : "";
+
+  const reversalTone =
+    reversalRisk === "LOW"
+      ? "pillWin"
+      : reversalRisk === "HIGH"
+      ? "pillLoss"
+      : "";
 
   const runAnalyze = useCallback(
     async (symbol, tf) => {
@@ -485,10 +594,26 @@ export default function Dashboard() {
         setAlignmentLabel(norm.alignment?.label ?? null);
         setAlignmentDetails(Array.isArray(norm.alignment?.details) ? norm.alignment.details : []);
 
+        setBias(norm.briefing.bias);
+        setStructure(norm.briefing.structure);
+        setPreviousTrend(norm.briefing.previousTrend);
+        setTrendStrength(norm.briefing.trendStrength);
+        setMarketState(norm.briefing.marketState);
+        setReversalRisk(norm.briefing.reversalRisk);
+        setBuyerZone(norm.briefing.buyerZone);
+        setSellerZone(norm.briefing.sellerZone);
+        setAreaOfInterest(norm.briefing.areaOfInterest);
+        setConfirmationNeeded(norm.briefing.confirmationNeeded);
+        setPreferredSetup(norm.briefing.preferredSetup);
+        setInvalidation(norm.briefing.invalidation);
+        setBriefSupport(norm.briefing.support);
+        setBriefResistance(norm.briefing.resistance);
+        setLiquidityBelow(norm.briefing.liquidityBelow);
+        setLiquidityAbove(norm.briefing.liquidityAbove);
+
         setMaxActiveTotal(safeNum(norm.maxActive ?? maxActiveTotal, maxActiveTotal));
         setDailyR(safeNum(norm.raw?.daily_R ?? dailyR, dailyR));
         setActiveTotal(safeNum(norm.raw?.active_total ?? activeTotal, activeTotal));
-
         setLastActions(norm.actions || []);
 
         if (norm.active && norm.raw?.signal) {
@@ -592,10 +717,10 @@ export default function Dashboard() {
       const newRanked = Array.isArray(data?.ranked) ? data.ranked : Array.isArray(data) ? data : [];
 
       newRanked.sort((a, b) => {
-        const ar = safeNum(a.score_1_10 ?? a.rank ?? 0, 0);
-        const br = safeNum(b.score_1_10 ?? b.rank ?? 0, 0);
-        if (br !== ar) return br - ar;
-        return safeNum(b.confidence, 0) - safeNum(a.confidence, 0);
+        const ac = safeNum(a.confidence, 0);
+        const bc = safeNum(b.confidence, 0);
+        if (bc !== ac) return bc - ac;
+        return (b.market_state === "TRENDING CLEAN") - (a.market_state === "TRENDING CLEAN");
       });
 
       setRanked(newRanked);
@@ -606,12 +731,7 @@ export default function Dashboard() {
       if (autoPickOn) {
         const best = newRanked
           .filter((r) => (r.direction === "BUY" || r.direction === "SELL") && safeNum(r.confidence, 0) > 0)
-          .sort((a, b) => {
-            const ar = safeNum(a.score_1_10 ?? a.rank ?? 0, 0);
-            const br = safeNum(b.score_1_10 ?? b.rank ?? 0, 0);
-            if (br !== ar) return br - ar;
-            return safeNum(b.confidence, 0) - safeNum(a.confidence, 0);
-          })[0];
+          .sort((a, b) => safeNum(b.confidence, 0) - safeNum(a.confidence, 0))[0];
 
         if (best?.symbol) {
           if (best.symbol !== selectedSymbol) setSelectedSymbol(best.symbol);
@@ -661,13 +781,13 @@ export default function Dashboard() {
               (msg.symbol === selectedSymbol || !msg.symbol) &&
               (msg.timeframe === timeframe || !msg.timeframe)
             ) {
-              const supports = Array.isArray(msg?.levels?.supports) ? msg.levels.supports : [];
-              const resistances = Array.isArray(msg?.levels?.resistances) ? msg.levels.resistances : [];
+              const nextSupports = Array.isArray(msg?.levels?.supports) ? msg.levels.supports : [];
+              const nextResistances = Array.isArray(msg?.levels?.resistances) ? msg.levels.resistances : [];
               const nextCandles = Array.isArray(msg?.candles) ? msg.candles : [];
 
               setCandles(nextCandles);
-              setSupports(supports);
-              setResistances(resistances);
+              setSupports(nextSupports);
+              setResistances(nextResistances);
 
               if (msg.price !== null && msg.price !== undefined) {
                 setPrice(msg.price);
@@ -683,7 +803,6 @@ export default function Dashboard() {
 
         ws.onclose = () => {
           wsRef.current = null;
-
           if (!closedByUser) {
             reconnectTimerRef.current = setTimeout(() => {
               connect();
@@ -773,7 +892,7 @@ export default function Dashboard() {
         <div className="topRow">
           <div>
             <div className="title">DEXTRADEZ AI TRADING SYSTEM</div>
-            <div className="subtitle">Volatility Engine • Liquidity Detection • Signal Intelligence</div>
+            <div className="subtitle">Market Intelligence • Liquidity Mapping • Selective Trade Ideas</div>
           </div>
 
           <div className="badges">
@@ -829,13 +948,17 @@ export default function Dashboard() {
         <div className="controls">
           <select value={selectedSymbol} onChange={(e) => setSelectedSymbol(e.target.value)} className="select">
             {VOLATILITY_OPTIONS.map((v) => (
-              <option key={v.symbol} value={v.symbol}>{v.symbol} — {v.name}</option>
+              <option key={v.symbol} value={v.symbol}>
+                {v.symbol} — {v.name}
+              </option>
             ))}
           </select>
 
           <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)} className="select">
             {TIMEFRAMES.map((t) => (
-              <option key={t.value} value={t.value}>{t.label}</option>
+              <option key={t.value} value={t.value}>
+                {t.label}
+              </option>
             ))}
           </select>
 
@@ -853,7 +976,12 @@ export default function Dashboard() {
 
           <div className="miniField">
             <span className="miniLabel">every</span>
-            <input className="miniInput" value={autoScanEverySec} onChange={(e) => setAutoScanEverySec(e.target.value)} inputMode="numeric" />
+            <input
+              className="miniInput"
+              value={autoScanEverySec}
+              onChange={(e) => setAutoScanEverySec(e.target.value)}
+              inputMode="numeric"
+            />
             <span className="miniLabel">s</span>
           </div>
 
@@ -869,7 +997,12 @@ export default function Dashboard() {
 
           <div className="miniField">
             <span className="miniLabel">every</span>
-            <input className="miniInput" value={autoAnalyzeEverySec} onChange={(e) => setAutoAnalyzeEverySec(e.target.value)} inputMode="numeric" />
+            <input
+              className="miniInput"
+              value={autoAnalyzeEverySec}
+              onChange={(e) => setAutoAnalyzeEverySec(e.target.value)}
+              inputMode="numeric"
+            />
             <span className="miniLabel">s</span>
           </div>
 
@@ -879,45 +1012,15 @@ export default function Dashboard() {
           </label>
         </div>
 
-        <div className="system-panel">
-          <div className="system-panel-title">System Status</div>
-          <div className="system-list">
-            <div className="system-item">
-              <span>Liquidity Engine</span>
-              <span className="system-dot"></span>
-            </div>
-            <div className="system-item">
-              <span>Volatility Filter</span>
-              <span className="system-dot"></span>
-            </div>
-            <div className="system-item">
-              <span>Regime Detection</span>
-              <span className="system-dot"></span>
-            </div>
-            <div className="system-item">
-              <span>Spike Protection</span>
-              <span className="system-dot"></span>
-            </div>
-            <div className="system-item">
-              <span>Telegram Alerts</span>
-              <span className="system-dot"></span>
-            </div>
-            <div className="system-item">
-              <span>Auto Scanner</span>
-              <span className={autoScanOn ? "system-dot" : "system-dot off"}></span>
-            </div>
-          </div>
-        </div>
-
         {topPick ? (
           <div className="topPick">
             <div className="topPickLeft">
               <span className="pill fire">🔥 TOP</span>
               <span className="mono">{topPick.symbol}</span>
               <span className="pill">{topPick.direction}</span>
-              <span className="pill">Rank {safeNum(topPick.score_1_10 ?? topPick.rank ?? 0, 0)}/10</span>
               <span className="pill">Conf {safeNum(topPick.confidence, 0)}%</span>
-              {topPick.entry_type || topPick.mode ? <span className="pill">Mode {topPick.entry_type || topPick.mode}</span> : null}
+              {topPick.market_state ? <span className="pill">{topPick.market_state}</span> : null}
+              {topPick.preferred_setup ? <span className="pill">{topPick.preferred_setup}</span> : null}
             </div>
             <div className="topPickRight">
               <button className="btn small" onClick={() => setSelectedSymbol(topPick.symbol)}>Select</button>
@@ -932,7 +1035,9 @@ export default function Dashboard() {
         <div className="card">
           <div className="cardHeader">
             <h3>Chart</h3>
-            <div className="tiny">Candles: {candles?.length || 0} • S: {supports?.length || 0} • R: {resistances?.length || 0}</div>
+            <div className="tiny">
+              Candles: {candles?.length || 0} • S: {supports?.length || 0} • R: {resistances?.length || 0}
+            </div>
           </div>
 
           <div className="chartWrap">
@@ -954,13 +1059,49 @@ export default function Dashboard() {
 
         <div className="card">
           <div className="cardHeader">
-            <h3>Signal</h3>
+            <h3>Market Briefing</h3>
             <span className={`badge ${status === "LIVE" ? "live" : ""}`}>{status}</span>
           </div>
 
           <div className="signalLine"><span className="smallText">Market</span><strong>{selectedSymbol} — {selectedName}</strong></div>
           <div className="signalLine"><span className="smallText">Timeframe</span><strong>{timeframe}</strong></div>
-          <div className="signalLine"><span className="smallText">Direction</span><strong>{direction}</strong></div>
+          <div className="signalLine"><span className="smallText">Bias</span><strong>{bias}</strong></div>
+          <div className="signalLine"><span className="smallText">Structure</span><strong>{structure}</strong></div>
+          <div className="signalLine"><span className="smallText">Previous Trend</span><strong>{previousTrend}</strong></div>
+          <div className="signalLine">
+            <span className="smallText">Trend Strength</span>
+            <strong>{trendStrength === null ? "-" : trendStrength}</strong>
+          </div>
+          <div className="signalLine">
+            <span className="smallText">Market State</span>
+            <strong><span className={`pill ${marketStateTone}`}>{marketState}</span></strong>
+          </div>
+          <div className="signalLine">
+            <span className="smallText">Reversal Risk</span>
+            <strong><span className={`pill ${reversalTone}`}>{reversalRisk}</span></strong>
+          </div>
+
+          <div className="signalLine"><span className="smallText">Buyer Zone</span><strong>{buyerZone}</strong></div>
+          <div className="signalLine"><span className="smallText">Seller Zone</span><strong>{sellerZone}</strong></div>
+          <div className="signalLine"><span className="smallText">AOI</span><strong>{areaOfInterest}</strong></div>
+          <div className="signalLine"><span className="smallText">Support</span><strong>{briefSupport}</strong></div>
+          <div className="signalLine"><span className="smallText">Resistance</span><strong>{briefResistance}</strong></div>
+          <div className="signalLine"><span className="smallText">Liquidity Below</span><strong>{liquidityBelow}</strong></div>
+          <div className="signalLine"><span className="smallText">Liquidity Above</span><strong>{liquidityAbove}</strong></div>
+
+          <div className="reason">
+            <span className="smallText"><b>Preferred Setup:</b> {preferredSetup}</span>
+          </div>
+          <div className="reason">
+            <span className="smallText"><b>Confirmation Needed:</b> {confirmationNeeded}</span>
+          </div>
+          <div className="reason">
+            <span className="smallText"><b>Invalidation:</b> {invalidation}</span>
+          </div>
+
+          <hr style={{ opacity: 0.15, margin: "14px 0" }} />
+
+          <div className="signalLine"><span className="smallText">Signal Direction</span><strong>{direction}</strong></div>
           <div className="signalLine"><span className="smallText">Confidence</span><strong>{confidence}%</strong></div>
           <div className="signalLine"><span className="smallText">Entry Type</span><strong>{entryType || "—"}</strong></div>
           <div className="signalLine"><span className="smallText">Weighted Alignment</span><strong>{currentAlignmentChip || "—"}</strong></div>
@@ -990,7 +1131,9 @@ export default function Dashboard() {
           <div className="signalLine"><span className="smallText">TP1</span><strong>{tp1 ?? "-"}</strong></div>
           <div className="signalLine"><span className="smallText">TP2</span><strong>{tp2 ?? "-"}</strong></div>
 
-          <div className="reason"><span className="smallText"><b>Reason:</b> {reason}</span></div>
+          <div className="reason">
+            <span className="smallText"><b>Reason:</b> {reason}</span>
+          </div>
 
           {lastActions?.length ? (
             <div className="actionsBox">
@@ -1010,39 +1153,52 @@ export default function Dashboard() {
       </div>
 
       <div className="card scannerCard">
-        <div className="cardHeader"><h3>Scanner</h3><div className="tiny">Markets: {ranked?.length || 0}</div></div>
+        <div className="cardHeader">
+          <h3>Scanner</h3>
+          <div className="tiny">Markets: {ranked?.length || 0}</div>
+        </div>
+
         <div className="tableWrap">
           <table className="table">
             <thead>
               <tr>
-                <th>Market</th><th>Rank</th><th>Action</th><th>Conf</th><th>Mode</th><th>Entry</th><th>SL</th><th>TP</th><th>Notes</th>
+                <th>Market</th>
+                <th>Bias</th>
+                <th>State</th>
+                <th>Risk</th>
+                <th>Action</th>
+                <th>Conf</th>
+                <th>AOI</th>
+                <th>Setup</th>
+                <th>Entry</th>
+                <th>SL</th>
               </tr>
             </thead>
             <tbody>
               {ranked?.length ? (
                 ranked.map((r, idx) => {
                   const isHot = idx === 0 && (r.direction === "BUY" || r.direction === "SELL") && safeNum(r.confidence, 0) > 0;
-                  const rowMode = r.entry_type || r.mode || (r.pending ? "PENDING" : r.active_trade ? "ACTIVE" : "");
+
                   return (
                     <tr key={`${r.symbol || idx}-${idx}`} className={isHot ? "hotRow" : ""}>
                       <td className="mono">
                         {r.symbol ?? "-"} {isHot ? <span className="pill fireTiny">🔥</span> : null}
                         {r.active_trade ? <span className="pill pillWin" style={{ marginLeft: 6 }}>ACTIVE</span> : null}
-                        {r.pending ? <span className="pill" style={{ marginLeft: 6 }}>PENDING</span> : null}
                       </td>
-                      <td>{safeNum(r.rank ?? r.score_1_10 ?? 0, 0)}</td>
-                      <td>{r.action ?? r.direction ?? "—"}</td>
+                      <td>{r.bias ?? "—"}</td>
+                      <td className="notes">{r.market_state ?? "—"}</td>
+                      <td>{r.reversal_risk ?? "—"}</td>
+                      <td>{r.direction ?? "—"}</td>
                       <td>{safeNum(r.confidence, 0)}%</td>
-                      <td>{rowMode || "—"}</td>
+                      <td className="notes">{r.area_of_interest ?? "—"}</td>
+                      <td className="notes">{r.preferred_setup ?? r.entry_type ?? "—"}</td>
                       <td>{r.entry ?? "-"}</td>
                       <td>{r.sl ?? "-"}</td>
-                      <td>{r.tp ?? "-"}</td>
-                      <td className="notes">{r.reason ?? r.notes ?? "—"}</td>
                     </tr>
                   );
                 })
               ) : (
-                <tr><td colSpan="9" className="emptyRow">No scan yet. Click “Scan Markets”.</td></tr>
+                <tr><td colSpan="10" className="emptyRow">No scan yet. Click “Scan Markets”.</td></tr>
               )}
             </tbody>
           </table>
@@ -1076,7 +1232,17 @@ export default function Dashboard() {
             <table className="table">
               <thead>
                 <tr>
-                  <th>Time</th><th>Market</th><th>TF</th><th>Dir</th><th>Mode</th><th>Conf</th><th>Entry</th><th>SL</th><th>TP2</th><th>Outcome</th><th>R</th>
+                  <th>Time</th>
+                  <th>Market</th>
+                  <th>TF</th>
+                  <th>Dir</th>
+                  <th>Mode</th>
+                  <th>Conf</th>
+                  <th>Entry</th>
+                  <th>SL</th>
+                  <th>TP2</th>
+                  <th>Outcome</th>
+                  <th>R</th>
                 </tr>
               </thead>
               <tbody>
