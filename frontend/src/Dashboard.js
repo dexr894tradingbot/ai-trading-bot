@@ -21,7 +21,7 @@ const TIMEFRAMES = [
   { value: "4h", label: "4h" },
 ];
 
-const LS_KEY_STATE = "dex_bot_ui_state_v2";
+const LS_KEY_STATE = "dex_bot_ui_state_v3";
 const LS_KEY_HISTORY = "dex_bot_history_v1";
 
 function safeNum(x, fallback = 0) {
@@ -378,6 +378,61 @@ function getBestMarketFromHistory(items) {
   return best;
 }
 
+function CollapsibleCard({
+  title,
+  right = null,
+  isOpen,
+  onToggle,
+  children,
+  className = "",
+}) {
+  return (
+    <div className={`card ${className}`.trim()}>
+      <button
+        type="button"
+        className="collapseToggle"
+        onClick={onToggle}
+        aria-expanded={isOpen}
+        style={{
+          width: "100%",
+          background: "transparent",
+          border: "none",
+          padding: 0,
+          color: "inherit",
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        <div
+          className="cardHeader"
+          style={{ marginBottom: isOpen ? 14 : 0 }}
+        >
+          <div
+            className="collapseLeft"
+            style={{ display: "flex", alignItems: "center", gap: 10 }}
+          >
+            <span
+              className="collapseArrow"
+              style={{ fontSize: 13, opacity: 0.9, minWidth: 12 }}
+            >
+              {isOpen ? "▼" : "▶"}
+            </span>
+            <h3
+              className="collapseTitle"
+              style={{ margin: 0, fontSize: "inherit" }}
+            >
+              {title}
+            </h3>
+          </div>
+          <div className="collapseRight">{right}</div>
+        </div>
+      </button>
+
+      {isOpen ? <div className="collapseBody">{children}</div> : null}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const restored = useMemo(() => {
     try {
@@ -459,6 +514,24 @@ export default function Dashboard() {
 
   const [accountSize, setAccountSize] = useState(restored?.accountSize ?? 100);
   const [riskPercent, setRiskPercent] = useState(restored?.riskPercent ?? 2);
+
+  const [openSections, setOpenSections] = useState(
+    restored?.openSections || {
+      topPick: false,
+      chart: false,
+      marketBriefing: true,
+      riskCalculator: false,
+      scanner: true,
+      history: false,
+    }
+  );
+
+  const toggleSection = useCallback((key) => {
+    setOpenSections((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  }, []);
 
   const performance = useMemo(() => calcPerformance(history), [history]);
   const symbolsList = useMemo(() => VOLATILITY_OPTIONS.map((v) => v.symbol), []);
@@ -585,6 +658,7 @@ export default function Dashboard() {
           lastActions,
           accountSize,
           riskPercent,
+          openSections,
           lastOkAt: lastOkAtRef.current,
           lastLiveAt: lastLiveAtRef.current,
         })
@@ -639,6 +713,7 @@ export default function Dashboard() {
     lastActions,
     accountSize,
     riskPercent,
+    openSections,
   ]);
 
   useEffect(() => {
@@ -1191,22 +1266,30 @@ export default function Dashboard() {
         </div>
 
         {topPick ? (
-          <div className="topPick">
-            <div className="topPickLeft">
-              <span className="pill fire">🔥 TOP</span>
-              <span className="mono">{topPick.symbol}</span>
-              <span className="pill">{topPick.direction}</span>
-              <span className="pill">Conf {safeNum(topPick.confidence, 0)}%</span>
-              {topPick.market_state ? <span className="pill">{topPick.market_state}</span> : null}
-              {topPick.preferred_setup ? <span className="pill">{topPick.preferred_setup}</span> : null}
-              <span className="pill">
-                Strength {renderStrengthBar(computeStrength(topPick))} {computeStrength(topPick).toFixed(1)} / 10
-              </span>
+          <CollapsibleCard
+            title="Top Pick"
+            className="topPick"
+            isOpen={openSections.topPick}
+            onToggle={() => toggleSection("topPick")}
+            right={<div className="tiny">Best live setup</div>}
+          >
+            <div className="topPick">
+              <div className="topPickLeft">
+                <span className="pill fire">🔥 TOP</span>
+                <span className="mono">{topPick.symbol}</span>
+                <span className="pill">{topPick.direction}</span>
+                <span className="pill">Conf {safeNum(topPick.confidence, 0)}%</span>
+                {topPick.market_state ? <span className="pill">{topPick.market_state}</span> : null}
+                {topPick.preferred_setup ? <span className="pill">{topPick.preferred_setup}</span> : null}
+                <span className="pill">
+                  Strength {renderStrengthBar(computeStrength(topPick))} {computeStrength(topPick).toFixed(1)} / 10
+                </span>
+              </div>
+              <div className="topPickRight">
+                <button className="btn small" onClick={() => setSelectedSymbol(topPick.symbol)}>Select</button>
+              </div>
             </div>
-            <div className="topPickRight">
-              <button className="btn small" onClick={() => setSelectedSymbol(topPick.symbol)}>Select</button>
-            </div>
-          </div>
+          </CollapsibleCard>
         ) : null}
 
         {error ? <div className="errorBox">Error: {error}</div> : null}
@@ -1232,14 +1315,16 @@ export default function Dashboard() {
       </div>
 
       <div className="mainGrid">
-        <div className="card">
-          <div className="cardHeader">
-            <h3>Chart</h3>
+        <CollapsibleCard
+          title="Chart"
+          isOpen={openSections.chart}
+          onToggle={() => toggleSection("chart")}
+          right={
             <div className="tiny">
               Candles: {candles?.length || 0} • S: {supports?.length || 0} • R: {resistances?.length || 0}
             </div>
-          </div>
-
+          }
+        >
           <div className="chartWrap">
             <Chart
               key={`${selectedSymbol}-${timeframe}`}
@@ -1255,14 +1340,14 @@ export default function Dashboard() {
               tp2={tp2}
             />
           </div>
-        </div>
+        </CollapsibleCard>
 
-        <div className="card">
-          <div className="cardHeader">
-            <h3>Market Briefing</h3>
-            <span className={`badge ${status === "LIVE" ? "live" : ""}`}>{status}</span>
-          </div>
-
+        <CollapsibleCard
+          title="Market Briefing"
+          isOpen={openSections.marketBriefing}
+          onToggle={() => toggleSection("marketBriefing")}
+          right={<span className={`badge ${status === "LIVE" ? "live" : ""}`}>{status}</span>}
+        >
           <div className="signalLine"><span className="smallText">Market</span><strong>{selectedSymbol} — {selectedName}</strong></div>
           <div className="signalLine"><span className="smallText">Timeframe</span><strong>{timeframe}</strong></div>
           <div className="signalLine"><span className="smallText">Bias</span><strong>{bias}</strong></div>
@@ -1356,15 +1441,15 @@ export default function Dashboard() {
               </div>
             </div>
           ) : null}
-        </div>
+        </CollapsibleCard>
       </div>
 
-      <div className="card">
-        <div className="cardHeader">
-          <h3>Risk Calculator</h3>
-          <div className="tiny">Premium Tool</div>
-        </div>
-
+      <CollapsibleCard
+        title="Risk Calculator"
+        isOpen={openSections.riskCalculator}
+        onToggle={() => toggleSection("riskCalculator")}
+        right={<div className="tiny">Premium Tool</div>}
+      >
         <div className="togglesRow" style={{ alignItems: "flex-end" }}>
           <div className="miniField">
             <span className="miniLabel">Account</span>
@@ -1409,14 +1494,15 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-      </div>
+      </CollapsibleCard>
 
-      <div className="card scannerCard">
-        <div className="cardHeader">
-          <h3>Scanner</h3>
-          <div className="tiny">Markets: {ranked?.length || 0}</div>
-        </div>
-
+      <CollapsibleCard
+        title="Scanner"
+        className="scannerCard"
+        isOpen={openSections.scanner}
+        onToggle={() => toggleSection("scanner")}
+        right={<div className="tiny">Markets: {ranked?.length || 0}</div>}
+      >
         <div className="tableWrap">
           <table className="table">
             <thead>
@@ -1437,13 +1523,18 @@ export default function Dashboard() {
             <tbody>
               {ranked?.length ? (
                 ranked.map((r, idx) => {
-                  const isHot = idx === 0 && (r.direction === "BUY" || r.direction === "SELL") && safeNum(r.confidence, 0) > 0;
+                  const isHot =
+                    idx === 0 &&
+                    (r.direction === "BUY" || r.direction === "SELL") &&
+                    safeNum(r.confidence, 0) > 0;
 
                   return (
                     <tr key={`${r.symbol || idx}-${idx}`} className={isHot ? "hotRow" : ""}>
                       <td className="mono">
                         {r.symbol ?? "-"} {isHot ? <span className="pill fireTiny">🔥</span> : null}
-                        {r.active_trade ? <span className="pill pillWin" style={{ marginLeft: 6 }}>ACTIVE</span> : null}
+                        {r.active_trade ? (
+                          <span className="pill pillWin" style={{ marginLeft: 6 }}>ACTIVE</span>
+                        ) : null}
                       </td>
                       <td>{r.bias ?? "—"}</td>
                       <td className="notes">{r.market_state ?? "—"}</td>
@@ -1464,22 +1555,27 @@ export default function Dashboard() {
                   );
                 })
               ) : (
-                <tr><td colSpan="11" className="emptyRow">No scan yet. Click “Scan Markets”.</td></tr>
+                <tr>
+                  <td colSpan="11" className="emptyRow">No scan yet. Click “Scan Markets”.</td>
+                </tr>
               )}
             </tbody>
           </table>
         </div>
-      </div>
+      </CollapsibleCard>
 
       {showHistory ? (
-        <div className="card historyCard">
-          <div className="cardHeader">
-            <h3>History & Performance</h3>
+        <CollapsibleCard
+          title="History & Performance"
+          className="historyCard"
+          isOpen={openSections.history}
+          onToggle={() => toggleSection("history")}
+          right={
             <div className="tiny">
               Closed: {performance.closedCount} • Wins: {performance.wins} • Losses: {performance.losses} • Win%: {performance.winRate}% • Sum R: {performance.sumR}
             </div>
-          </div>
-
+          }
+        >
           <div className="perfGrid">
             <div className="perfBox"><div className="perfLabel">Avg R</div><div className="perfValue">{performance.avgR}</div></div>
             <div className="perfBox"><div className="perfLabel">Best Win Streak</div><div className="perfValue">{performance.bestWinStreak}</div></div>
@@ -1542,7 +1638,7 @@ export default function Dashboard() {
           <div className="tiny note">
             Note: If your backend sleeps, updates can stall until it wakes.
           </div>
-        </div>
+        </CollapsibleCard>
       ) : null}
     </div>
   );
