@@ -21,7 +21,7 @@ const TIMEFRAMES = [
   { value: "4h", label: "4h" },
 ];
 
-const LS_KEY_STATE = "dex_bot_ui_state_v3";
+const LS_KEY_STATE = "dex_bot_ui_state_v4";
 const LS_KEY_HISTORY = "dex_bot_history_v1";
 
 function safeNum(x, fallback = 0) {
@@ -65,6 +65,11 @@ function pickModeLabel(sig = {}) {
     (sig.bos_level ? "SNIPER" : "") ||
     ""
   );
+}
+
+function qualityText(grade, stars) {
+  if (!grade) return "—";
+  return `${grade}${stars ? ` ${stars}` : ""}`;
 }
 
 function normalizeAlignment(raw) {
@@ -168,17 +173,21 @@ function normalizeAnalyzeResponse(data) {
     reason: sig?.reason ?? data?.reason ?? "—",
     price: data?.price ?? sig?.price ?? null,
     entryType: pickModeLabel(sig),
+    qualityGrade: sig?.quality_grade ?? null,
+    qualityStars: sig?.quality_stars ?? "",
+    qualityScore: safeNum(sig?.quality_score ?? null, null),
     alignment,
     briefing,
     active: !!data?.active,
     actions: Array.isArray(data?.actions) ? data.actions : [],
     pending: data?.pending ?? null,
     closedTrade: data?.closed_trade ?? null,
+    liveTracker: data?.live_tracker ?? null,
+    dailyOutlook: data?.daily_outlook ?? null,
     raw: data,
     maxActive,
   };
 }
-
 function makeHistoryItem({ symbol, timeframe, signal, openedAt, closedAt, outcome, closePrice }) {
   const entry = safeNum(signal?.entry, null);
   const sl = safeNum(signal?.sl, null);
@@ -211,6 +220,8 @@ function makeHistoryItem({ symbol, timeframe, signal, openedAt, closedAt, outcom
     reason: signal?.reason ?? "—",
     tp1Hit: !!signal?.tp1_hit,
     entryType: pickModeLabel(signal),
+    qualityGrade: signal?.quality_grade ?? null,
+    qualityStars: signal?.quality_stars ?? "",
   };
 }
 
@@ -464,6 +475,10 @@ export default function Dashboard() {
   const [price, setPrice] = useState(restored?.price ?? null);
 
   const [entryType, setEntryType] = useState(restored?.entryType || "");
+  const [qualityGrade, setQualityGrade] = useState(restored?.qualityGrade || null);
+  const [qualityStars, setQualityStars] = useState(restored?.qualityStars || "");
+  const [qualityScore, setQualityScore] = useState(restored?.qualityScore ?? null);
+
   const [alignmentScore, setAlignmentScore] = useState(restored?.alignmentScore ?? null);
   const [alignmentLabel, setAlignmentLabel] = useState(restored?.alignmentLabel ?? null);
   const [alignmentDetails, setAlignmentDetails] = useState(restored?.alignmentDetails || []);
@@ -487,6 +502,8 @@ export default function Dashboard() {
 
   const [scanLoading, setScanLoading] = useState(false);
   const [ranked, setRanked] = useState(restored?.ranked || []);
+  const [dailyOutlook, setDailyOutlook] = useState(restored?.dailyOutlook || null);
+  const [liveTracker, setLiveTracker] = useState(restored?.liveTracker || null);
   const [dailyR, setDailyR] = useState(restored?.dailyR || 0);
   const [activeTotal, setActiveTotal] = useState(restored?.activeTotal || 0);
   const [maxActiveTotal, setMaxActiveTotal] = useState(restored?.maxActiveTotal || 5);
@@ -517,6 +534,8 @@ export default function Dashboard() {
 
   const [openSections, setOpenSections] = useState(
     restored?.openSections || {
+      dailyOutlook: true,
+      openTrades: true,
       topPick: false,
       chart: false,
       marketBriefing: true,
@@ -532,11 +551,30 @@ export default function Dashboard() {
       [key]: !prev[key],
     }));
   }, []);
-
   const performance = useMemo(() => calcPerformance(history), [history]);
   const symbolsList = useMemo(() => VOLATILITY_OPTIONS.map((v) => v.symbol), []);
   const selectedName =
     VOLATILITY_OPTIONS.find((v) => v.symbol === selectedSymbol)?.name || selectedSymbol;
+
+  const openMarkets = useMemo(() => {
+    const rows = ranked.filter((r) => r.active_trade);
+    if (activeTrade && !rows.some((r) => r.symbol === activeTrade.symbol)) {
+      return [
+        {
+          symbol: activeTrade.symbol,
+          direction: activeTrade.direction,
+          confidence: activeTrade.confidence,
+          active_trade: true,
+          market_state: marketState,
+          preferred_setup: preferredSetup,
+          quality_grade: activeTrade.quality_grade || qualityGrade,
+          quality_stars: activeTrade.quality_stars || qualityStars,
+        },
+        ...rows,
+      ];
+    }
+    return rows;
+  }, [ranked, activeTrade, marketState, preferredSetup, qualityGrade, qualityStars]);
 
   const aiExplanation = useMemo(
     () =>
@@ -625,6 +663,9 @@ export default function Dashboard() {
           reason,
           price,
           entryType,
+          qualityGrade,
+          qualityStars,
+          qualityScore,
           alignmentScore,
           alignmentLabel,
           alignmentDetails,
@@ -645,6 +686,8 @@ export default function Dashboard() {
           liquidityBelow,
           liquidityAbove,
           ranked,
+          dailyOutlook,
+          liveTracker,
           dailyR,
           activeTotal,
           maxActiveTotal,
@@ -680,6 +723,9 @@ export default function Dashboard() {
     reason,
     price,
     entryType,
+    qualityGrade,
+    qualityStars,
+    qualityScore,
     alignmentScore,
     alignmentLabel,
     alignmentDetails,
@@ -700,6 +746,8 @@ export default function Dashboard() {
     liquidityBelow,
     liquidityAbove,
     ranked,
+    dailyOutlook,
+    liveTracker,
     dailyR,
     activeTotal,
     maxActiveTotal,
@@ -754,6 +802,9 @@ export default function Dashboard() {
     setTp2(null);
     setReason("Loading new market...");
     setEntryType("");
+    setQualityGrade(null);
+    setQualityStars("");
+    setQualityScore(null);
     setAlignmentScore(null);
     setAlignmentLabel(null);
     setAlignmentDetails([]);
@@ -774,6 +825,7 @@ export default function Dashboard() {
     setLiquidityBelow("-");
     setLiquidityAbove("-");
     setLastActions([]);
+    setLiveTracker(null);
     setStatus("ANALYZING");
     setError("");
   }, [selectedSymbol, timeframe]);
@@ -810,7 +862,6 @@ export default function Dashboard() {
       : reversalRisk === "HIGH"
       ? "pillLoss"
       : "";
-
   const runAnalyze = useCallback(
     async (symbol, tf) => {
       if (busyRef.current) return null;
@@ -840,6 +891,10 @@ export default function Dashboard() {
         setTp1(norm.tp1 ?? null);
         setTp2(norm.tp2 ?? null);
         setReason(norm.reason || "—");
+        setQualityGrade(norm.qualityGrade ?? null);
+        setQualityStars(norm.qualityStars ?? "");
+        setQualityScore(norm.qualityScore ?? null);
+
         if (norm.price !== null && norm.price !== undefined) setPrice(norm.price);
 
         setEntryType(norm.entryType || "");
@@ -868,6 +923,8 @@ export default function Dashboard() {
         setDailyR(safeNum(norm.raw?.daily_R ?? dailyR, dailyR));
         setActiveTotal(safeNum(norm.raw?.active_total ?? activeTotal, activeTotal));
         setLastActions(norm.actions || []);
+        setLiveTracker(norm.liveTracker || null);
+        if (norm.dailyOutlook) setDailyOutlook(norm.dailyOutlook);
 
         if (norm.active && norm.raw?.signal) {
           setActiveTrade({
@@ -877,6 +934,11 @@ export default function Dashboard() {
             actions: norm.actions || [],
             price: norm.price ?? null,
             alignment: norm.alignment || null,
+          });
+        } else if (!norm.active) {
+          setActiveTrade((prev) => {
+            if (prev?.symbol === symbol && prev?.timeframe === tf) return null;
+            return prev;
           });
         }
 
@@ -894,7 +956,11 @@ export default function Dashboard() {
 
             setHistory((prev) => {
               const exists = prev.some(
-                (t) => t.symbol === symbol && t.timeframe === tf && t.outcome === "OPEN" && t.openedAt === openedAt
+                (t) =>
+                  t.symbol === symbol &&
+                  t.timeframe === tf &&
+                  t.outcome === "OPEN" &&
+                  t.openedAt === openedAt
               );
               if (exists) return prev;
 
@@ -910,7 +976,10 @@ export default function Dashboard() {
           }
         }
 
-        if (norm.closedTrade?.outcome && (norm.closedTrade.outcome === "TP2" || norm.closedTrade.outcome === "SL")) {
+        if (
+          norm.closedTrade?.outcome &&
+          (norm.closedTrade.outcome === "TP2" || norm.closedTrade.outcome === "SL")
+        ) {
           const outcome = norm.closedTrade.outcome;
           const closedAt = norm.closedTrade.closed_at ?? Math.floor(Date.now() / 1000);
 
@@ -935,10 +1004,15 @@ export default function Dashboard() {
             return [...next, item].slice(-500);
           });
 
-          if (openTradeRef.current && openTradeRef.current.symbol === symbol && openTradeRef.current.timeframe === tf) {
+          if (
+            openTradeRef.current &&
+            openTradeRef.current.symbol === symbol &&
+            openTradeRef.current.timeframe === tf
+          ) {
             openTradeRef.current = null;
           }
           setActiveTrade(null);
+          setLiveTracker(null);
         }
 
         lastOkAtRef.current = Date.now();
@@ -959,7 +1033,7 @@ export default function Dashboard() {
   );
 
   const onScan = useCallback(async () => {
-    if (busyRef.current) return;
+    if (busyRef.current) return null;
     busyRef.current = true;
     setError("");
     setScanLoading(true);
@@ -977,9 +1051,20 @@ export default function Dashboard() {
       });
 
       setRanked(newRanked);
+      setDailyOutlook(data?.daily_outlook || null);
       setDailyR(safeNum(data?.daily_R ?? 0, 0));
       setActiveTotal(safeNum(data?.active_total ?? 0, 0));
-      if (data?.max_active_total !== undefined) setMaxActiveTotal(safeNum(data.max_active_total, maxActiveTotal));
+
+      if (data?.max_active_total !== undefined) {
+        setMaxActiveTotal(safeNum(data.max_active_total, maxActiveTotal));
+      }
+
+      const activeRow = newRanked.find((r) => r.active_trade);
+      if (activeRow?.symbol) {
+        setSelectedSymbol(activeRow.symbol);
+        busyRef.current = false;
+        return await runAnalyze(activeRow.symbol, timeframe);
+      }
 
       if (autoPickOn) {
         const best = newRanked
@@ -1030,21 +1115,25 @@ export default function Dashboard() {
             const msg = JSON.parse(event.data);
 
             if (
-              msg.type === "live_chart" &&
+              (msg.type === "live_chart" || msg.type === "live_tick") &&
               (msg.symbol === selectedSymbol || !msg.symbol) &&
               (msg.timeframe === timeframe || !msg.timeframe)
             ) {
-              const nextSupports = Array.isArray(msg?.levels?.supports) ? msg.levels.supports : [];
-              const nextResistances = Array.isArray(msg?.levels?.resistances) ? msg.levels.resistances : [];
-              const nextCandles = Array.isArray(msg?.candles) ? msg.candles : [];
+              if (msg.type === "live_chart") {
+                const nextSupports = Array.isArray(msg?.levels?.supports) ? msg.levels.supports : [];
+                const nextResistances = Array.isArray(msg?.levels?.resistances) ? msg.levels.resistances : [];
+                const nextCandles = Array.isArray(msg?.candles) ? msg.candles : [];
 
-              setCandles(nextCandles);
-              setSupports(nextSupports);
-              setResistances(nextResistances);
+                setCandles(nextCandles);
+                setSupports(nextSupports);
+                setResistances(nextResistances);
+              }
 
               if (msg.price !== null && msg.price !== undefined) {
                 setPrice(msg.price);
               }
+
+              setLiveTracker(msg?.live_tracker || null);
 
               lastLiveAtRef.current = Date.now();
               if (!busyRef.current) setStatus("LIVE");
@@ -1139,7 +1228,7 @@ export default function Dashboard() {
       ? `${activeTrade?.alignment?.label ? `${activeTrade.alignment.label} ` : ""}${Math.round(activeTrade.alignment.score)}%`
       : null;
 
-  return (
+  return (      
     <div className="layout">
       <div className="card topCard">
         <div className="topRow">
@@ -1165,6 +1254,9 @@ export default function Dashboard() {
               <span className="mono">{activeTrade.symbol} • {activeTrade.timeframe}</span>
               <span className="pill">{activeTrade.direction}</span>
               <span className="pill">Conf {safeNum(activeTrade.confidence, 0)}%</span>
+              <span className="pill">
+                Quality {qualityText(activeTrade.quality_grade || qualityGrade, activeTrade.quality_stars || qualityStars)}
+              </span>
               {pickModeLabel(activeTrade) ? <span className="pill">Mode {pickModeLabel(activeTrade)}</span> : null}
               {activeAlignmentChip ? <span className="pill">Align {activeAlignmentChip}</span> : null}
               {activeTrade.tp1_hit ? <span className="pill pillWin">TP1 hit ✅</span> : <span className="pill">TP1 pending</span>}
@@ -1180,6 +1272,18 @@ export default function Dashboard() {
 
               <button className="btn small" onClick={() => setSelectedSymbol(activeTrade.symbol)}>Select</button>
             </div>
+
+            {liveTracker ? (
+              <div className="activeActions" style={{ marginTop: 10 }}>
+                <div className="miniLabel">Live Trade Tracker</div>
+                <div className="actionsList">
+                  <div className="actionChip"><span className="mono">Status: {liveTracker.status || "-"}</span></div>
+                  <div className="actionChip"><span className="mono">Progress: {safeNum(liveTracker.progress_pct, 0)}%</span></div>
+                  <div className="actionChip"><span className="mono">Price: {liveTracker.current_price ?? "-"}</span></div>
+                  <div className="actionChip"><span className="mono">Quality: {qualityText(liveTracker.quality_grade, liveTracker.quality_stars)}</span></div>
+                </div>
+              </div>
+            ) : null}
 
             {Array.isArray(activeTrade.actions) && activeTrade.actions.length ? (
               <div className="activeActions">
@@ -1265,33 +1369,6 @@ export default function Dashboard() {
           </label>
         </div>
 
-        {topPick ? (
-          <CollapsibleCard
-            title="Top Pick"
-            className="topPick"
-            isOpen={openSections.topPick}
-            onToggle={() => toggleSection("topPick")}
-            right={<div className="tiny">Best live setup</div>}
-          >
-            <div className="topPick">
-              <div className="topPickLeft">
-                <span className="pill fire">🔥 TOP</span>
-                <span className="mono">{topPick.symbol}</span>
-                <span className="pill">{topPick.direction}</span>
-                <span className="pill">Conf {safeNum(topPick.confidence, 0)}%</span>
-                {topPick.market_state ? <span className="pill">{topPick.market_state}</span> : null}
-                {topPick.preferred_setup ? <span className="pill">{topPick.preferred_setup}</span> : null}
-                <span className="pill">
-                  Strength {renderStrengthBar(computeStrength(topPick))} {computeStrength(topPick).toFixed(1)} / 10
-                </span>
-              </div>
-              <div className="topPickRight">
-                <button className="btn small" onClick={() => setSelectedSymbol(topPick.symbol)}>Select</button>
-              </div>
-            </div>
-          </CollapsibleCard>
-        ) : null}
-
         {error ? <div className="errorBox">Error: {error}</div> : null}
 
         <div className="perfGrid" style={{ marginTop: 14 }}>
@@ -1313,6 +1390,80 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {dailyOutlook ? (
+        <CollapsibleCard
+          title="Daily Market Outlook"
+          isOpen={openSections.dailyOutlook}
+          onToggle={() => toggleSection("dailyOutlook")}
+          right={<div className="tiny">Scanner overview</div>}
+        >
+          <div className="signalLine"><span className="smallText">Headline</span><strong>{dailyOutlook.headline || "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">Best Market</span><strong>{dailyOutlook.best_symbol || "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">Direction</span><strong>{dailyOutlook.best_direction || "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">Confidence</span><strong>{safeNum(dailyOutlook.best_confidence, 0)}%</strong></div>
+          <div className="signalLine"><span className="smallText">Market State</span><strong>{dailyOutlook.market_state || "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">AOI</span><strong>{dailyOutlook.area_of_interest || "-"}</strong></div>
+          <div className="reason">
+            <span className="smallText"><b>Preferred Setup:</b> {dailyOutlook.preferred_setup || "-"}</span>
+          </div>
+          <div className="reason">
+            <span className="smallText"><b>Note:</b> {dailyOutlook.note || "-"}</span>
+          </div>
+        </CollapsibleCard>
+      ) : null}
+
+      <CollapsibleCard
+        title="Open Trades"
+        isOpen={openSections.openTrades}
+        onToggle={() => toggleSection("openTrades")}
+        right={<div className="tiny">{openMarkets.length} open</div>}
+      >
+        {openMarkets.length ? (
+          <div className="actionsList">
+            {openMarkets.map((m, idx) => (
+              <div key={`${m.symbol}-${idx}`} className="actionChip" style={{ padding: 10 }}>
+                <span className="mono">{m.symbol}</span>
+                <span className="mono">{m.direction || "-"}</span>
+                <span className="mono">Conf {safeNum(m.confidence, 0)}%</span>
+                <span className="mono">{qualityText(m.quality_grade, m.quality_stars)}</span>
+                {m.market_state ? <span className="mono">{m.market_state}</span> : null}
+                <button className="btn small" onClick={() => setSelectedSymbol(m.symbol)}>Select</button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="emptyRow">No open trades right now.</div>
+        )}
+      </CollapsibleCard>
+
+      {topPick ? (
+        <CollapsibleCard
+          title="Top Pick"
+          className="topPick"
+          isOpen={openSections.topPick}
+          onToggle={() => toggleSection("topPick")}
+          right={<div className="tiny">Best live setup</div>}
+        >
+          <div className="topPick">
+            <div className="topPickLeft">
+              <span className="pill fire">🔥 TOP</span>
+              <span className="mono">{topPick.symbol}</span>
+              <span className="pill">{topPick.direction}</span>
+              <span className="pill">Conf {safeNum(topPick.confidence, 0)}%</span>
+              <span className="pill">Quality {qualityText(topPick.quality_grade, topPick.quality_stars)}</span>
+              {topPick.market_state ? <span className="pill">{topPick.market_state}</span> : null}
+              {topPick.preferred_setup ? <span className="pill">{topPick.preferred_setup}</span> : null}
+              <span className="pill">
+                Strength {renderStrengthBar(computeStrength(topPick))} {computeStrength(topPick).toFixed(1)} / 10
+              </span>
+            </div>
+            <div className="topPickRight">
+              <button className="btn small" onClick={() => setSelectedSymbol(topPick.symbol)}>Select</button>
+            </div>
+          </div>
+        </CollapsibleCard>
+      ) : null}
 
       <div className="mainGrid">
         <CollapsibleCard
@@ -1388,6 +1539,7 @@ export default function Dashboard() {
 
           <div className="signalLine"><span className="smallText">Signal Direction</span><strong>{direction}</strong></div>
           <div className="signalLine"><span className="smallText">Confidence</span><strong>{confidence}%</strong></div>
+          <div className="signalLine"><span className="smallText">Signal Quality</span><strong>{qualityText(qualityGrade, qualityStars)}</strong></div>
           <div className="signalLine"><span className="smallText">Entry Type</span><strong>{entryType || "—"}</strong></div>
           <div className="signalLine"><span className="smallText">Weighted Alignment</span><strong>{currentAlignmentChip || "—"}</strong></div>
 
@@ -1513,6 +1665,7 @@ export default function Dashboard() {
                 <th>Risk</th>
                 <th>Action</th>
                 <th>Conf</th>
+                <th>Quality</th>
                 <th>Strength</th>
                 <th>AOI</th>
                 <th>Setup</th>
@@ -1541,6 +1694,7 @@ export default function Dashboard() {
                       <td>{r.reversal_risk ?? "—"}</td>
                       <td>{r.direction ?? "—"}</td>
                       <td>{safeNum(r.confidence, 0)}%</td>
+                      <td>{qualityText(r.quality_grade, r.quality_stars)}</td>
                       <td className="mono">
                         {(() => {
                           const s = computeStrength(r);
@@ -1556,7 +1710,7 @@ export default function Dashboard() {
                 })
               ) : (
                 <tr>
-                  <td colSpan="11" className="emptyRow">No scan yet. Click “Scan Markets”.</td>
+                  <td colSpan="12" className="emptyRow">No scan yet. Click “Scan Markets”.</td>
                 </tr>
               )}
             </tbody>
@@ -1603,6 +1757,7 @@ export default function Dashboard() {
                   <th>TF</th>
                   <th>Dir</th>
                   <th>Mode</th>
+                  <th>Quality</th>
                   <th>Conf</th>
                   <th>Entry</th>
                   <th>SL</th>
@@ -1620,6 +1775,7 @@ export default function Dashboard() {
                       <td>{t.timeframe}</td>
                       <td>{t.direction}</td>
                       <td>{t.entryType || "—"}</td>
+                      <td>{qualityText(t.qualityGrade, t.qualityStars)}</td>
                       <td>{safeNum(t.confidence, 0)}%</td>
                       <td>{fmt(t.entry)}</td>
                       <td>{fmt(t.sl)}</td>
@@ -1629,7 +1785,7 @@ export default function Dashboard() {
                     </tr>
                   ))
                 ) : (
-                  <tr><td colSpan="11" className="emptyRow">No history yet.</td></tr>
+                  <tr><td colSpan="12" className="emptyRow">No history yet.</td></tr>
                 )}
               </tbody>
             </table>
