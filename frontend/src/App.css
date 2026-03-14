@@ -1150,3 +1150,45 @@ body::after{
   50% { opacity: 1; }
   100% { opacity: 0.65; }
 }
+.perfValue,
+.mono,
+.signalLine strong,
+.pill,
+.actionChip,
+.openTradeRow,
+.openTradeRow * {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.perfBox,
+.signalLine,
+.activeBanner,
+.openTradeRow,
+.topPick,
+.actionChip {
+  min-width: 0;
+}
+
+.openTradeRow {
+  display: grid;
+  grid-template-columns: 1.2fr 0.9fr 0.9fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+@media (max-width: 768px) {
+  .openTradeRow {
+    grid-template-columns: 1fr;
+  }
+
+  .perfGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .activeNums {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+}

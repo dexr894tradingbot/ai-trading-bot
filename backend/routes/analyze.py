@@ -235,26 +235,28 @@ def quality_grade_from_signal(
     score = int(confidence)
 
     if market_state == "TRENDING CLEAN":
-        score += 6
+        score += 8
     elif market_state == "TRENDING PULLBACK":
         score += 3
+    elif market_state == "WEAK TREND":
+        score -=6    
 
     if reversal_risk == "LOW":
-        score += 4
-    elif reversal_risk == "MEDIUM":
-        score -= 3
-    elif reversal_risk == "HIGH":
-        score -= 8
-
-    if trend_strength >= 0.20:
-        score += 5
-    elif trend_strength >= 0.12:
         score += 2
+    elif reversal_risk == "MEDIUM":
+        score -= 6
+    elif reversal_risk == "HIGH":
+        score -= 12
+
+    if trend_strength >= 0.22:
+        score += 8
+    elif trend_strength >= 0.14:
+        score += 4
 
     if "smc_reversal" in setup_reason:
-        score += 4
+        score += 6
     elif "pullback_continuation" in setup_reason:
-        score += 2
+        score += 3
 
     if bias == "NEUTRAL":
         score -= 10
@@ -495,79 +497,6 @@ def _performance(last_n: int) -> Dict[str, Any]:
         "win_rate": round(win_rate, 2),
         "avg_R": round(avg_r, 3),
         "total_R": round(total_r, 3),
-    }
-def quality_grade_from_conf(conf: int) -> str:
-    if conf >= 90:
-        return "A+"
-    if conf >= 84:
-        return "A"
-    if conf >= 78:
-        return "B+"
-    if conf >= 72:
-        return "B"
-    if conf >= 66:
-        return "C+"
-    if conf >= 60:
-        return "C"
-    return "D"
-    
-
-def quality_stars_from_conf(conf: int) -> str:
-    if conf >= 90:
-        return "★★★★★"
-    if conf >= 80:
-        return "★★★★☆"
-    if conf >= 70:
-        return "★★★☆☆"
-    if conf >= 60:
-        return "★★☆☆☆"
-    if conf > 0:
-        return "★☆☆☆☆"
-    return ""
-    
-
-def build_daily_outlook(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    tradable = [
-        r for r in rows
-        if r.get("direction") in ("BUY", "SELL") and int(r.get("confidence", 0)) > 0
-    ]
-
-    if not tradable:
-        return {
-            "headline": "No strong trade ready right now",
-            "best_symbol": "-",
-            "best_direction": "HOLD",
-            "best_confidence": 0,
-            "quality_grade": None,
-            "quality_stars": "",
-            "market_state": "WAIT",
-            "area_of_interest": "-",
-            "preferred_setup": "Stay patient and wait for clean confirmation",
-            "note": "Market is being monitored. No premium-quality entry yet.",
-        }
-
-    best = sorted(
-        tradable,
-        key=lambda x: (
-            int(x.get("confidence", 0)),
-            x.get("market_state") == "TRENDING CLEAN",
-        ),
-        reverse=True,
-    )[0]
-
-    conf = int(best.get("confidence", 0))
-
-    return {
-        "headline": f"Best live setup: {best.get('symbol', '-')}",
-        "best_symbol": best.get("symbol", "-"),
-        "best_direction": best.get("direction", "HOLD"),
-        "best_confidence": conf,
-        "quality_grade": quality_grade_from_conf(conf),
-        "quality_stars": quality_stars_from_conf(conf),
-        "market_state": best.get("market_state", "-"),
-        "area_of_interest": best.get("area_of_interest", "-"),
-        "preferred_setup": best.get("preferred_setup", "-"),
-        "note": best.get("reason", "Scanner found the strongest current setup."),
     }
 
 # =========================================================
@@ -1286,7 +1215,7 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
 
     tp1 = entry + risk if direction == "BUY" else entry - risk
     trend_strength = float(context["trend_entry"].get("trend_strength") or 0.0)
-    confidence = 70
+    confidence = 52
 
     if trend_strength >= 0.18:
         confidence += 6
@@ -1319,9 +1248,7 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
         "quality_score": quality["quality_score"],
         "quality_grade": quality["quality_grade"],
         "quality_stars": quality["quality_stars"],
-               "quality_grade": quality_grade_from_conf(confidence),
-        "quality_stars": quality_stars_from_conf(confidence),
-        "quality_score": confidence, 
+        
         "meta": {
             "bias": context["bias"],
             "structure": context["structure"],
@@ -1676,7 +1603,7 @@ async def analyze_market(req: AnalyzeRequest):
             "levels": levels,
             "briefing": context,
             "signal": opened,
-            "live_tracker": build_live_trade_tracker(opened, price),
+            "live_tracker": None,
             "daily_outlook": None,
             "active": True,
             "actions": [],
@@ -1693,7 +1620,7 @@ async def analyze_market(req: AnalyzeRequest):
         "levels": levels,
         "briefing": context,
         "signal": signal,
-        "live_tracker": build_live_tracker(opened, price),
+        "live_tracker":  None,
         "daily_outlook": None,
         "active": False,
         "actions": [],
