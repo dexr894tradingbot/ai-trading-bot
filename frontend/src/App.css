@@ -1051,8 +1051,25 @@ body::after{
 
 .activeNums {
   display: grid;
-  grid-template-columns: repeat(4, minmax(70px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  width: 100%;
+  margin-top: 12px;
+}
+
+.activeNums > div {
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.activeNums .mono {
+  display: block;
+  font-size: 1.05rem;
+  line-height: 1.2;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .tableWrap {
