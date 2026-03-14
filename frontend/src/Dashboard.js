@@ -266,6 +266,118 @@ function calcPerformance(items) {
   };
 }
 
+function computeStrength(row) {
+  const conf = safeNum(row.confidence, 0);
+
+  const actionBonus =
+    row.direction === "BUY" || row.direction === "SELL" ? 0.8 : 0.2;
+
+  const stateBonus =
+    row.market_state === "TRENDING CLEAN"
+      ? 1.0
+      : row.market_state === "TRENDING PULLBACK"
+      ? 0.7
+      : row.market_state === "WEAK TREND"
+      ? 0.35
+      : 0.1;
+
+  const riskPenalty =
+    row.reversal_risk === "HIGH"
+      ? -1.3
+      : row.reversal_risk === "MEDIUM"
+      ? -0.6
+      : 0;
+
+  const confPart = (conf / 100) * 7;
+  const raw = confPart + actionBonus + stateBonus + riskPenalty;
+
+  return clamp(raw, 0, 10);
+}
+
+function renderStrengthBar(score) {
+  const filled = Math.max(0, Math.min(10, Math.round(score)));
+  const empty = 10 - filled;
+  return "█".repeat(filled) + "░".repeat(empty);
+}
+
+function buildAiExplanation({
+  bias,
+  structure,
+  marketState,
+  reversalRisk,
+  areaOfInterest,
+  preferredSetup,
+  confirmationNeeded,
+  liquidityAbove,
+  liquidityBelow,
+}) {
+  const lines = [];
+
+  lines.push(`Bias is ${bias || "-"}.`);
+  lines.push(`Structure is ${structure || "-"}.`);
+  lines.push(`Market state is ${marketState || "-"}.`);
+
+  if (reversalRisk && reversalRisk !== "-") {
+    lines.push(`Reversal risk is ${reversalRisk}.`);
+  }
+
+  if (areaOfInterest && areaOfInterest !== "-") {
+    lines.push(`Main area of interest is ${areaOfInterest}.`);
+  }
+
+  if (preferredSetup && preferredSetup !== "-") {
+    lines.push(`Preferred setup: ${preferredSetup}.`);
+  }
+
+  if (confirmationNeeded && confirmationNeeded !== "-") {
+    lines.push(`Confirmation needed: ${confirmationNeeded}.`);
+  }
+
+  if (liquidityAbove && liquidityAbove !== "-") {
+    lines.push(`Liquidity above sits near ${liquidityAbove}.`);
+  }
+
+  if (liquidityBelow && liquidityBelow !== "-") {
+    lines.push(`Liquidity below sits near ${liquidityBelow}.`);
+  }
+
+  return lines.join(" ");
+}
+
+function getBestSetupFromHistory(items) {
+  const counts = {};
+  for (const t of items) {
+    const key = t.entryType || "Unknown";
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  let best = "—";
+  let bestCount = 0;
+  for (const [k, v] of Object.entries(counts)) {
+    if (v > bestCount) {
+      best = k;
+      bestCount = v;
+    }
+  }
+  return best;
+}
+
+function getBestMarketFromHistory(items) {
+  const counts = {};
+  for (const t of items) {
+    const key = t.symbol || "Unknown";
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  let best = "—";
+  let bestCount = 0;
+  for (const [k, v] of Object.entries(counts)) {
+    if (v > bestCount) {
+      best = k;
+      bestCount = v;
+    }
+  }
+  return best;
+}
+
 export default function Dashboard() {
   const restored = useMemo(() => {
     try {
@@ -345,10 +457,72 @@ export default function Dashboard() {
     }
   });
 
+  const [accountSize, setAccountSize] = useState(restored?.accountSize ?? 100);
+  const [riskPercent, setRiskPercent] = useState(restored?.riskPercent ?? 2);
+
   const performance = useMemo(() => calcPerformance(history), [history]);
   const symbolsList = useMemo(() => VOLATILITY_OPTIONS.map((v) => v.symbol), []);
   const selectedName =
     VOLATILITY_OPTIONS.find((v) => v.symbol === selectedSymbol)?.name || selectedSymbol;
+
+  const aiExplanation = useMemo(
+    () =>
+      buildAiExplanation({
+        bias,
+        structure,
+        marketState,
+        reversalRisk,
+        areaOfInterest,
+        preferredSetup,
+        confirmationNeeded,
+        liquidityAbove,
+        liquidityBelow,
+      }),
+    [
+      bias,
+      structure,
+      marketState,
+      reversalRisk,
+      areaOfInterest,
+      preferredSetup,
+      confirmationNeeded,
+      liquidityAbove,
+      liquidityBelow,
+    ]
+  );
+
+  const riskAmount = useMemo(() => {
+    const size = safeNum(accountSize, 0);
+    const pct = safeNum(riskPercent, 0);
+    return (size * pct) / 100;
+  }, [accountSize, riskPercent]);
+
+  const rrMultiple = useMemo(() => {
+    if (entry == null || sl == null || tp2 == null) return null;
+    const risk = Math.abs(Number(entry) - Number(sl));
+    const reward = Math.abs(Number(tp2) - Number(entry));
+    if (!Number.isFinite(risk) || risk <= 0) return null;
+    return reward / risk;
+  }, [entry, sl, tp2]);
+
+  const estimatedTp1Profit = useMemo(() => {
+    if (!riskAmount || entry == null || sl == null || tp1 == null) return null;
+    const risk = Math.abs(Number(entry) - Number(sl));
+    const reward = Math.abs(Number(tp1) - Number(entry));
+    if (!Number.isFinite(risk) || risk <= 0) return null;
+    return (reward / risk) * riskAmount;
+  }, [riskAmount, entry, sl, tp1]);
+
+  const estimatedTp2Profit = useMemo(() => {
+    if (!riskAmount || entry == null || sl == null || tp2 == null) return null;
+    const risk = Math.abs(Number(entry) - Number(sl));
+    const reward = Math.abs(Number(tp2) - Number(entry));
+    if (!Number.isFinite(risk) || risk <= 0) return null;
+    return (reward / risk) * riskAmount;
+  }, [riskAmount, entry, sl, tp2]);
+
+  const personalBestSetup = useMemo(() => getBestSetupFromHistory(history), [history]);
+  const personalBestMarket = useMemo(() => getBestMarketFromHistory(history), [history]);
 
   const busyRef = useRef(false);
   const wsRef = useRef(null);
@@ -409,6 +583,8 @@ export default function Dashboard() {
           showHistory,
           activeTrade,
           lastActions,
+          accountSize,
+          riskPercent,
           lastOkAt: lastOkAtRef.current,
           lastLiveAt: lastLiveAtRef.current,
         })
@@ -461,6 +637,8 @@ export default function Dashboard() {
     showHistory,
     activeTrade,
     lastActions,
+    accountSize,
+    riskPercent,
   ]);
 
   useEffect(() => {
@@ -1021,6 +1199,9 @@ export default function Dashboard() {
               <span className="pill">Conf {safeNum(topPick.confidence, 0)}%</span>
               {topPick.market_state ? <span className="pill">{topPick.market_state}</span> : null}
               {topPick.preferred_setup ? <span className="pill">{topPick.preferred_setup}</span> : null}
+              <span className="pill">
+                Strength {renderStrengthBar(computeStrength(topPick))} {computeStrength(topPick).toFixed(1)} / 10
+              </span>
             </div>
             <div className="topPickRight">
               <button className="btn small" onClick={() => setSelectedSymbol(topPick.symbol)}>Select</button>
@@ -1029,6 +1210,25 @@ export default function Dashboard() {
         ) : null}
 
         {error ? <div className="errorBox">Error: {error}</div> : null}
+
+        <div className="perfGrid" style={{ marginTop: 14 }}>
+          <div className="perfBox">
+            <div className="perfLabel">Today Win %</div>
+            <div className="perfValue">{performance.winRate}%</div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">Closed Trades</div>
+            <div className="perfValue">{performance.closedCount}</div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">Sum R</div>
+            <div className="perfValue">{performance.sumR}</div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">Best Setup</div>
+            <div className="perfValue" style={{ fontSize: 14 }}>{personalBestSetup}</div>
+          </div>
+        </div>
       </div>
 
       <div className="mainGrid">
@@ -1135,6 +1335,13 @@ export default function Dashboard() {
             <span className="smallText"><b>Reason:</b> {reason}</span>
           </div>
 
+          <div className="reason" style={{ marginTop: 12 }}>
+            <span className="smallText"><b>AI Trade Explanation:</b></span>
+            <div className="tiny note" style={{ marginTop: 6 }}>
+              {aiExplanation}
+            </div>
+          </div>
+
           {lastActions?.length ? (
             <div className="actionsBox">
               <div className="tiny"><b>Backend actions:</b></div>
@@ -1149,6 +1356,58 @@ export default function Dashboard() {
               </div>
             </div>
           ) : null}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="cardHeader">
+          <h3>Risk Calculator</h3>
+          <div className="tiny">Premium Tool</div>
+        </div>
+
+        <div className="togglesRow" style={{ alignItems: "flex-end" }}>
+          <div className="miniField">
+            <span className="miniLabel">Account</span>
+            <input
+              className="miniInput"
+              value={accountSize}
+              onChange={(e) => setAccountSize(e.target.value)}
+              inputMode="decimal"
+            />
+          </div>
+
+          <div className="miniField">
+            <span className="miniLabel">Risk %</span>
+            <input
+              className="miniInput"
+              value={riskPercent}
+              onChange={(e) => setRiskPercent(e.target.value)}
+              inputMode="decimal"
+            />
+          </div>
+        </div>
+
+        <div className="perfGrid" style={{ marginTop: 14 }}>
+          <div className="perfBox">
+            <div className="perfLabel">Risk Amount</div>
+            <div className="perfValue">${safeNum(riskAmount, 0).toFixed(2)}</div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">R:R</div>
+            <div className="perfValue">{rrMultiple === null ? "—" : rrMultiple.toFixed(2)}</div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">Est. TP1</div>
+            <div className="perfValue">
+              {estimatedTp1Profit === null ? "—" : `$${estimatedTp1Profit.toFixed(2)}`}
+            </div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">Est. TP2</div>
+            <div className="perfValue">
+              {estimatedTp2Profit === null ? "—" : `$${estimatedTp2Profit.toFixed(2)}`}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1168,6 +1427,7 @@ export default function Dashboard() {
                 <th>Risk</th>
                 <th>Action</th>
                 <th>Conf</th>
+                <th>Strength</th>
                 <th>AOI</th>
                 <th>Setup</th>
                 <th>Entry</th>
@@ -1190,6 +1450,12 @@ export default function Dashboard() {
                       <td>{r.reversal_risk ?? "—"}</td>
                       <td>{r.direction ?? "—"}</td>
                       <td>{safeNum(r.confidence, 0)}%</td>
+                      <td className="mono">
+                        {(() => {
+                          const s = computeStrength(r);
+                          return `${renderStrengthBar(s)} ${s.toFixed(1)} / 10`;
+                        })()}
+                      </td>
                       <td className="notes">{r.area_of_interest ?? "—"}</td>
                       <td className="notes">{r.preferred_setup ?? r.entry_type ?? "—"}</td>
                       <td>{r.entry ?? "-"}</td>
@@ -1198,7 +1464,7 @@ export default function Dashboard() {
                   );
                 })
               ) : (
-                <tr><td colSpan="10" className="emptyRow">No scan yet. Click “Scan Markets”.</td></tr>
+                <tr><td colSpan="11" className="emptyRow">No scan yet. Click “Scan Markets”.</td></tr>
               )}
             </tbody>
           </table>
@@ -1219,6 +1485,10 @@ export default function Dashboard() {
             <div className="perfBox"><div className="perfLabel">Best Win Streak</div><div className="perfValue">{performance.bestWinStreak}</div></div>
             <div className="perfBox"><div className="perfLabel">Worst Lose Streak</div><div className="perfValue">{performance.bestLoseStreak}</div></div>
             <div className="perfBox"><div className="perfLabel">Last 30 (R)</div><div className="perfValue">{performance.last30R}</div></div>
+            <div className="perfBox"><div className="perfLabel">Best Market</div><div className="perfValue">{personalBestMarket}</div></div>
+            <div className="perfBox"><div className="perfLabel">Best Setup</div><div className="perfValue" style={{ fontSize: 14 }}>{personalBestSetup}</div></div>
+            <div className="perfBox"><div className="perfLabel">Trades Logged</div><div className="perfValue">{history.length}</div></div>
+            <div className="perfBox"><div className="perfLabel">TP Style</div><div className="perfValue">{performance.sumR}</div></div>
           </div>
 
           <div className="historyActions">
