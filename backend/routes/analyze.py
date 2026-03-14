@@ -496,7 +496,79 @@ def _performance(last_n: int) -> Dict[str, Any]:
         "avg_R": round(avg_r, 3),
         "total_R": round(total_r, 3),
     }
+def quality_grade_from_conf(conf: int) -> str:
+    if conf >= 90:
+        return "A+"
+    if conf >= 84:
+        return "A"
+    if conf >= 78:
+        return "B+"
+    if conf >= 72:
+        return "B"
+    if conf >= 66:
+        return "C+"
+    if conf >= 60:
+        return "C"
+    return "D"
+    
 
+def quality_stars_from_conf(conf: int) -> str:
+    if conf >= 90:
+        return "★★★★★"
+    if conf >= 80:
+        return "★★★★☆"
+    if conf >= 70:
+        return "★★★☆☆"
+    if conf >= 60:
+        return "★★☆☆☆"
+    if conf > 0:
+        return "★☆☆☆☆"
+    return ""
+    
+
+def build_daily_outlook(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    tradable = [
+        r for r in rows
+        if r.get("direction") in ("BUY", "SELL") and int(r.get("confidence", 0)) > 0
+    ]
+
+    if not tradable:
+        return {
+            "headline": "No strong trade ready right now",
+            "best_symbol": "-",
+            "best_direction": "HOLD",
+            "best_confidence": 0,
+            "quality_grade": None,
+            "quality_stars": "",
+            "market_state": "WAIT",
+            "area_of_interest": "-",
+            "preferred_setup": "Stay patient and wait for clean confirmation",
+            "note": "Market is being monitored. No premium-quality entry yet.",
+        }
+
+    best = sorted(
+        tradable,
+        key=lambda x: (
+            int(x.get("confidence", 0)),
+            x.get("market_state") == "TRENDING CLEAN",
+        ),
+        reverse=True,
+    )[0]
+
+    conf = int(best.get("confidence", 0))
+
+    return {
+        "headline": f"Best live setup: {best.get('symbol', '-')}",
+        "best_symbol": best.get("symbol", "-"),
+        "best_direction": best.get("direction", "HOLD"),
+        "best_confidence": conf,
+        "quality_grade": quality_grade_from_conf(conf),
+        "quality_stars": quality_stars_from_conf(conf),
+        "market_state": best.get("market_state", "-"),
+        "area_of_interest": best.get("area_of_interest", "-"),
+        "preferred_setup": best.get("preferred_setup", "-"),
+        "note": best.get("reason", "Scanner found the strongest current setup."),
+    }
 
 # =========================================================
 # INDICATORS
@@ -1247,6 +1319,9 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
         "quality_score": quality["quality_score"],
         "quality_grade": quality["quality_grade"],
         "quality_stars": quality["quality_stars"],
+               "quality_grade": quality_grade_from_conf(confidence),
+        "quality_stars": quality_stars_from_conf(confidence),
+        "quality_score": confidence, 
         "meta": {
             "bias": context["bias"],
             "structure": context["structure"],
@@ -1319,7 +1394,20 @@ async def close_trade(symbol: str, timeframe: str, trade: Dict[str, Any], outcom
         text=build_closed_message(symbol, timeframe, trade, outcome, price),
     )
     return trade
-
+def build_live_tracker(trade: Dict[str, Any], current_price: float) -> Dict[str, Any]:
+    return {
+        "status": trade.get("status", "OPEN"),
+        "direction": trade.get("direction"),
+        "entry": trade.get("entry"),
+        "sl": trade.get("sl"),
+        "tp1": trade.get("tp1"),
+        "tp2": trade.get("tp2", trade.get("tp")),
+        "current_price": round(current_price, 5),
+        "progress_pct": round(float(trade.get("progress_pct", 0.0)), 2),
+        "tp1_hit": bool(trade.get("tp1_hit", False)),
+        "quality_grade": trade.get("quality_grade"),
+        "quality_stars": trade.get("quality_stars"),
+    }
 
 async def manage_active_trade(
     symbol: str,
@@ -1605,7 +1693,7 @@ async def analyze_market(req: AnalyzeRequest):
         "levels": levels,
         "briefing": context,
         "signal": signal,
-        "live_tracker": None,
+        "live_tracker": build_live_tracker(opened, price),
         "daily_outlook": None,
         "active": False,
         "actions": [],
