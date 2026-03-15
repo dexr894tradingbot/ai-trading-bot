@@ -3,6 +3,7 @@ import Chart from "./Chart";
 import { analyzeMarket, scanMarkets, getBackendWebSocketUrl } from "./api";
 
 const VOLATILITY_OPTIONS = [
+  { symbol: "ALL", name: "All Markets" },
   { symbol: "R_10", name: "Volatility 10" },
   { symbol: "R_25", name: "Volatility 25" },
   { symbol: "R_50", name: "Volatility 50" },
@@ -20,7 +21,7 @@ const TIMEFRAMES = [
   { value: "4h", label: "4h" },
 ];
 
-const LS_KEY_STATE = "dex_bot_ui_state_v5";
+const LS_KEY_STATE = "dex_bot_ui_state_v6";
 const LS_KEY_HISTORY = "dex_bot_history_v2";
 
 function safeNum(x, fallback = 0) {
@@ -222,6 +223,7 @@ function makeHistoryItem({ symbol, timeframe, signal, openedAt, closedAt, outcom
     qualityStars: signal?.quality_stars ?? "",
   };
 }
+
 function calcPerformance(items) {
   const closed = items.filter((x) => x.outcome === "TP2" || x.outcome === "SL");
   const wins = closed.filter((x) => x.outcome === "TP2").length;
@@ -274,7 +276,6 @@ function calcPerformance(items) {
     last30R: Number(last30R.toFixed(2)),
   };
 }
-
 function computeStrength(row) {
   const conf = safeNum(row.confidence, 0);
 
@@ -474,7 +475,8 @@ export default function Dashboard() {
   const [briefResistance, setBriefResistance] = useState(restored?.briefResistance || "-");
   const [liquidityBelow, setLiquidityBelow] = useState(restored?.liquidityBelow || "-");
   const [liquidityAbove, setLiquidityAbove] = useState(restored?.liquidityAbove || "-");
-    const [scanLoading, setScanLoading] = useState(false);
+
+  const [scanLoading, setScanLoading] = useState(false);
   const [ranked, setRanked] = useState(restored?.ranked || []);
   const [dailyOutlook, setDailyOutlook] = useState(restored?.dailyOutlook || null);
   const [liveTracker, setLiveTracker] = useState(restored?.liveTracker || null);
@@ -518,7 +520,6 @@ export default function Dashboard() {
       history: false,
     }
   );
-
   const toggleSection = useCallback((key) => {
     setOpenSections((prev) => ({
       ...prev,
@@ -527,7 +528,12 @@ export default function Dashboard() {
   }, []);
 
   const performance = useMemo(() => calcPerformance(history), [history]);
-  const symbolsList = useMemo(() => VOLATILITY_OPTIONS.map((v) => v.symbol), []);
+
+  const symbolsList = useMemo(
+    () => VOLATILITY_OPTIONS.filter((v) => v.symbol !== "ALL").map((v) => v.symbol),
+    []
+  );
+
   const selectedName =
     VOLATILITY_OPTIONS.find((v) => v.symbol === selectedSymbol)?.name || selectedSymbol;
 
@@ -610,7 +616,8 @@ export default function Dashboard() {
   const personalBestSetup = useMemo(() => getBestSetupFromHistory(history), [history]);
   const personalBestMarket = useMemo(() => getBestMarketFromHistory(history), [history]);
 
-  const busyRef = useRef(false);
+  const analyzeBusyRef = useRef(false);
+  const scanBusyRef = useRef(false);
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const lastOkAtRef = useRef(restored?.lastOkAt || 0);
@@ -747,7 +754,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     const id = setInterval(() => {
-      if (busyRef.current) return;
+      if (analyzeBusyRef.current || scanBusyRef.current) return;
 
       const now = Date.now();
       const liveAge = now - (lastLiveAtRef.current || 0);
@@ -759,6 +766,7 @@ export default function Dashboard() {
 
     return () => clearInterval(id);
   }, []);
+
   useEffect(() => {
     setCandles([]);
     setSupports([]);
@@ -833,13 +841,13 @@ export default function Dashboard() {
       : reversalRisk === "HIGH"
       ? "pillLoss"
       : "";
-
   const runAnalyze = useCallback(
     async (symbol, tf) => {
-      if (busyRef.current) return null;
+      if (symbol === "ALL") return null;
+      if (analyzeBusyRef.current) return null;
 
       const requestId = ++analyzeRequestRef.current;
-      busyRef.current = true;
+      analyzeBusyRef.current = true;
       setError("");
       setStatus("ANALYZING");
 
@@ -996,7 +1004,7 @@ export default function Dashboard() {
         return null;
       } finally {
         if (requestId === analyzeRequestRef.current) {
-          busyRef.current = false;
+          analyzeBusyRef.current = false;
         }
       }
     },
@@ -1004,8 +1012,8 @@ export default function Dashboard() {
   );
 
   const onScan = useCallback(async () => {
-    if (busyRef.current) return null;
-    busyRef.current = true;
+    if (scanBusyRef.current) return null;
+    scanBusyRef.current = true;
     setError("");
     setScanLoading(true);
     setStatus("SCANNING");
@@ -1033,7 +1041,7 @@ export default function Dashboard() {
       const activeRow = newRanked.find((r) => r.active_trade);
       if (activeRow?.symbol) {
         if (activeRow.symbol !== selectedSymbol) setSelectedSymbol(activeRow.symbol);
-        busyRef.current = false;
+        scanBusyRef.current = false;
         return await runAnalyze(activeRow.symbol, timeframe);
       }
 
@@ -1044,7 +1052,7 @@ export default function Dashboard() {
 
         if (best?.symbol) {
           if (best.symbol !== selectedSymbol) setSelectedSymbol(best.symbol);
-          busyRef.current = false;
+          scanBusyRef.current = false;
           return await runAnalyze(best.symbol, timeframe);
         }
       }
@@ -1056,15 +1064,22 @@ export default function Dashboard() {
       setError(e?.message || "Scan failed");
       return null;
     } finally {
-      busyRef.current = false;
+      scanBusyRef.current = false;
       setScanLoading(false);
     }
   }, [symbolsList, timeframe, autoPickOn, selectedSymbol, runAnalyze, maxActiveTotal]);
 
   const onAnalyze = useCallback(async () => {
+    if (selectedSymbol === "ALL") {
+      await onScan();
+      return;
+    }
     await runAnalyze(selectedSymbol, timeframe);
-  }, [runAnalyze, selectedSymbol, timeframe]);
-   useEffect(() => {
+  }, [runAnalyze, onScan, selectedSymbol, timeframe]);
+
+  useEffect(() => {
+    if (selectedSymbol === "ALL") return;
+
     let closedByUser = false;
 
     function connect() {
@@ -1106,7 +1121,7 @@ export default function Dashboard() {
               setLiveTracker(msg?.live_tracker || null);
 
               lastLiveAtRef.current = Date.now();
-              if (!busyRef.current) setStatus("LIVE");
+              if (!analyzeBusyRef.current && !scanBusyRef.current) setStatus("LIVE");
             }
           } catch (err) {
             console.error("WS parse error:", err);
@@ -1144,14 +1159,14 @@ export default function Dashboard() {
       }
     };
   }, [selectedSymbol, timeframe]);
-
   useEffect(() => {
     if (!autoScanOn) return;
     const everyMs = clamp(safeNum(autoScanEverySec, 25), 5, 300) * 1000;
 
-    onScan();
+    if (!scanBusyRef.current) onScan();
+
     const id = setInterval(() => {
-      if (!document.hidden) onScan();
+      if (!document.hidden && !scanBusyRef.current) onScan();
     }, everyMs);
 
     return () => clearInterval(id);
@@ -1159,12 +1174,14 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!autoAnalyzeOn) return;
+    if (selectedSymbol === "ALL") return;
+
     const everyMs = clamp(safeNum(autoAnalyzeEverySec, 15), 5, 120) * 1000;
 
-    if (!busyRef.current) runAnalyze(selectedSymbol, timeframe);
+    if (!analyzeBusyRef.current) runAnalyze(selectedSymbol, timeframe);
 
     const id = setInterval(() => {
-      if (!document.hidden && !busyRef.current) {
+      if (!document.hidden && !analyzeBusyRef.current) {
         runAnalyze(selectedSymbol, timeframe);
       }
     }, everyMs);
@@ -1175,8 +1192,12 @@ export default function Dashboard() {
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === "visible") {
-        if (autoAnalyzeOn && !busyRef.current) runAnalyze(selectedSymbol, timeframe);
-        if (autoScanOn && !busyRef.current) onScan();
+        if (autoAnalyzeOn && selectedSymbol !== "ALL" && !analyzeBusyRef.current) {
+          runAnalyze(selectedSymbol, timeframe);
+        }
+        if (autoScanOn && !scanBusyRef.current) {
+          onScan();
+        }
       }
     };
     document.addEventListener("visibilitychange", onVis);
@@ -1289,7 +1310,9 @@ export default function Dashboard() {
             ))}
           </select>
 
-          <button className="btn primary" onClick={onAnalyze}>Analyze (Manual)</button>
+          <button className="btn primary" onClick={onAnalyze}>
+            {selectedSymbol === "ALL" ? "Scan All Markets" : "Analyze (Manual)"}
+          </button>
           <button className="btn" onClick={onScan} disabled={scanLoading}>
             {scanLoading ? "Scanning..." : "Scan Markets (Manual)"}
           </button>
@@ -1417,19 +1440,35 @@ export default function Dashboard() {
           right={<div className="tiny">Candles: {candles?.length || 0} • S: {supports?.length || 0} • R: {resistances?.length || 0}</div>}
         >
           <div className="chartWrap">
-            <Chart
-              key={`${selectedSymbol}-${timeframe}`}
-              candles={candles}
-              supports={supports}
-              resistances={resistances}
-              symbol={selectedSymbol}
-              timeframe={timeframe}
-              entry={entry}
-              sl={sl}
-              tp={tp}
-              tp1={tp1}
-              tp2={tp2}
-            />
+            {selectedSymbol === "ALL" ? (
+              <div
+                style={{
+                  minHeight: 460,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  opacity: 0.75,
+                  padding: 20,
+                  textAlign: "center",
+                }}
+              >
+                Scanner mode selected. Pick one market to view the live chart.
+              </div>
+            ) : (
+              <Chart
+                key={`${selectedSymbol}-${timeframe}`}
+                candles={candles}
+                supports={supports}
+                resistances={resistances}
+                symbol={selectedSymbol}
+                timeframe={timeframe}
+                entry={entry}
+                sl={sl}
+                tp={tp}
+                tp1={tp1}
+                tp2={tp2}
+              />
+            )}
           </div>
         </CollapsibleCard>
 
