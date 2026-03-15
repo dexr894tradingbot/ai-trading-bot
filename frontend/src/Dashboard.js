@@ -1516,7 +1516,7 @@ export default function Dashboard() {
       <div className="card topCard">
         <div className="topRow">
           <div>
-            <div className="title">DEXTRADEZ AI TRADING SYSTEM</div>
+            <div className="title">DEXTRADEZBOT AI</div>
             <div className="subtitle">Market Intelligence • Liquidity Mapping • Selective Trade Ideas</div>
           </div>
 
