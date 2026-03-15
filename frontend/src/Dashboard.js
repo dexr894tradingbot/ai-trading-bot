@@ -21,7 +21,7 @@ const TIMEFRAMES = [
   { value: "4h", label: "4h" },
 ];
 
-const LS_KEY_STATE = "dex_bot_ui_state_v6";
+const LS_KEY_STATE = "dex_bot_ui_state_v7";
 const LS_KEY_HISTORY = "dex_bot_history_v2";
 
 function safeNum(x, fallback = 0) {
@@ -223,6 +223,7 @@ function makeHistoryItem({ symbol, timeframe, signal, openedAt, closedAt, outcom
     qualityStars: signal?.quality_stars ?? "",
   };
 }
+
 function normalizeBackendHistoryItem(t = {}) {
   return {
     id:
@@ -239,10 +240,7 @@ function normalizeBackendHistoryItem(t = {}) {
     tp2: safeNum(t.tp2 ?? t.tp, null),
     openedAt: t.opened_at ?? null,
     closedAt: t.closed_at ?? null,
-    outcome:
-      t.status === "CLOSED"
-        ? t.outcome || "CLOSED"
-        : "OPEN",
+    outcome: t.status === "CLOSED" ? t.outcome || "CLOSED" : "OPEN",
     closePrice: safeNum(t.closed_price, null),
     rMult: safeNum(t.r_multiple, null),
     reason: t.reason || "—",
@@ -252,6 +250,7 @@ function normalizeBackendHistoryItem(t = {}) {
     qualityStars: t.quality_stars ?? "",
   };
 }
+
 function calcPerformance(items) {
   const closed = items.filter((x) => x.outcome === "TP2" || x.outcome === "SL");
   const wins = closed.filter((x) => x.outcome === "TP2").length;
@@ -399,6 +398,155 @@ function getBestMarketFromHistory(items) {
   return best;
 }
 
+function getScannerSmartLabel(row = {}, idx = 0) {
+  const conf = safeNum(row.confidence, 0);
+  const active = !!row.active_trade;
+  const direction = row.direction;
+  const state = row.market_state || "";
+  const risk = row.reversal_risk || "";
+  const quality = row.quality_grade || "";
+
+  if (active) return { text: "LIVE TRADE", tone: "pillWin" };
+  if ((direction === "BUY" || direction === "SELL") && idx === 0 && conf >= 75) {
+    return { text: "TOP PICK", tone: "fire" };
+  }
+  if (quality === "A+" || quality === "A") return { text: "PREMIUM", tone: "pillWin" };
+  if (state === "TRENDING CLEAN" && conf >= 70) return { text: "TREND CLEAN", tone: "pillWin" };
+  if (state === "TRENDING PULLBACK" && conf >= 60) return { text: "PULLBACK", tone: "" };
+  if (risk === "HIGH") return { text: "RISKY", tone: "pillLoss" };
+  if (direction === "BUY" || direction === "SELL") return { text: "WATCH", tone: "" };
+  return { text: "WAIT", tone: "" };
+}
+
+function buildAiSentimentModel({
+  ranked = [],
+  dailyOutlook = null,
+  bias = "-",
+  marketState = "-",
+  reversalRisk = "-",
+  trendStrength = null,
+  activeTotal = 0,
+  maxActiveTotal = 5,
+}) {
+  const tradable = ranked.filter(
+    (r) => (r.direction === "BUY" || r.direction === "SELL") && safeNum(r.confidence, 0) > 0
+  );
+
+  let score = 50;
+
+  if (dailyOutlook?.best_direction === "BUY" || dailyOutlook?.best_direction === "SELL") score += 10;
+  if (bias === "UP" || bias === "DOWN") score += 6;
+  if (marketState === "TRENDING CLEAN") score += 12;
+  else if (marketState === "TRENDING PULLBACK") score += 7;
+  else if (marketState === "WEAK TREND") score -= 4;
+  else if (marketState === "CHOPPY / NO-TRADE") score -= 12;
+
+  if (reversalRisk === "LOW") score += 6;
+  else if (reversalRisk === "MEDIUM") score -= 5;
+  else if (reversalRisk === "HIGH") score -= 12;
+
+  if (trendStrength !== null) {
+    const ts = safeNum(trendStrength, 0);
+    if (ts >= 0.2) score += 8;
+    else if (ts >= 0.1) score += 4;
+    else score -= 3;
+  }
+
+  if (tradable.length >= 3) score += 8;
+  else if (tradable.length === 2) score += 5;
+  else if (tradable.length === 1) score += 2;
+  else score -= 8;
+
+  if (activeTotal >= maxActiveTotal) score -= 5;
+
+  score = clamp(score, 0, 100);
+
+  let sentiment = "NEUTRAL";
+  let tone = "";
+  if (score >= 72) {
+    sentiment = "BULLISH / FAVORABLE";
+    tone = "pillWin";
+  } else if (score <= 38) {
+    sentiment = "DEFENSIVE / CAUTION";
+    tone = "pillLoss";
+  }
+
+  const summary =
+    sentiment === "BULLISH / FAVORABLE"
+      ? "Conditions are supportive for selective setups."
+      : sentiment === "DEFENSIVE / CAUTION"
+      ? "Market quality is weak. Protection matters more than aggression."
+      : "Mixed conditions. Best to stay selective and wait for clean confirmation.";
+
+  return {
+    score,
+    sentiment,
+    tone,
+    tradableCount: tradable.length,
+    summary,
+  };
+}
+
+function buildCommandCenter(activeTrade, liveTracker, price) {
+  if (!activeTrade) {
+    return {
+      title: "No active trade",
+      statusTone: "",
+      checklist: [
+        "Wait for a clean scanner signal.",
+        "Use high-quality setups only.",
+        "Avoid forcing entries in weak conditions.",
+      ],
+      stats: [],
+    };
+  }
+
+  const entry = safeNum(activeTrade.entry, null);
+  const sl = safeNum(activeTrade.sl, null);
+  const tp1 = safeNum(activeTrade.tp1, null);
+  const tp2 = safeNum(activeTrade.tp2 ?? activeTrade.tp, null);
+  const current = safeNum(liveTracker?.current_price ?? price, null);
+  const progress = safeNum(liveTracker?.progress_pct, 0);
+  const openedAt = activeTrade.opened_at || activeTrade.openedAt || null;
+  const minsOpen = openedAt ? Math.max(0, Math.round((Date.now() / 1000 - openedAt) / 60)) : null;
+
+  let riskDistance = null;
+  let rewardDistance = null;
+  if (entry !== null && sl !== null) riskDistance = Math.abs(entry - sl);
+  if (entry !== null && tp2 !== null) rewardDistance = Math.abs(tp2 - entry);
+
+  const checklist = [];
+  if (activeTrade.tp1_hit) {
+    checklist.push("TP1 already hit. Protect the position.");
+    checklist.push("Focus on trailing and not giving back profit.");
+  } else {
+    checklist.push("Watch whether price can first secure TP1.");
+    checklist.push("Do not overreact to small pullbacks before TP1.");
+  }
+
+  if (progress >= 75) checklist.push("Trade is in strong progress territory.");
+  else if (progress >= 40) checklist.push("Trade is moving, but still needs confirmation follow-through.");
+  else checklist.push("Trade is early. Stay patient and let structure develop.");
+
+  if (liveTracker?.status) checklist.push(`Live status: ${liveTracker.status}.`);
+
+  return {
+    title: `${activeTrade.symbol} ${activeTrade.direction} Command Center`,
+    statusTone: activeTrade.tp1_hit ? "pillWin" : "",
+    checklist,
+    stats: [
+      { label: "Progress", value: `${progress}%` },
+      { label: "Minutes Open", value: minsOpen === null ? "—" : String(minsOpen) },
+      { label: "Risk Dist.", value: riskDistance === null ? "—" : fmt(riskDistance) },
+      { label: "Reward Dist.", value: rewardDistance === null ? "—" : fmt(rewardDistance) },
+      { label: "Current", value: current === null ? "—" : fmt(current) },
+      { label: "Quality", value: qualityText(activeTrade.quality_grade, activeTrade.quality_stars) },
+      { label: "Mode", value: pickModeLabel(activeTrade) || "—" },
+      { label: "TP1", value: activeTrade.tp1_hit ? "Hit ✅" : tp1 === null ? "—" : fmt(tp1) },
+    ],
+  };
+}
+
 function CollapsibleCard({
   title,
   right = null,
@@ -467,8 +615,7 @@ export default function Dashboard() {
   const [candles, setCandles] = useState(restored?.candles || []);
   const [supports, setSupports] = useState(restored?.supports || []);
   const [resistances, setResistances] = useState(restored?.resistances || []);
-
-  const [direction, setDirection] = useState(restored?.direction || "HOLD");
+    const [direction, setDirection] = useState(restored?.direction || "HOLD");
   const [confidence, setConfidence] = useState(restored?.confidence || 0);
   const [entry, setEntry] = useState(restored?.entry ?? null);
   const [sl, setSl] = useState(restored?.sl ?? null);
@@ -504,7 +651,7 @@ export default function Dashboard() {
   const [liquidityBelow, setLiquidityBelow] = useState(restored?.liquidityBelow || "-");
   const [liquidityAbove, setLiquidityAbove] = useState(restored?.liquidityAbove || "-");
 
-  const [scanLoading, setScanLoading] = useState(false);
+  const [scanLoading, setScanLoading] = useState(restored?.scanLoading || false);
   const [ranked, setRanked] = useState(restored?.ranked || []);
   const [dailyOutlook, setDailyOutlook] = useState(restored?.dailyOutlook || null);
   const [liveTracker, setLiveTracker] = useState(restored?.liveTracker || null);
@@ -539,7 +686,9 @@ export default function Dashboard() {
   const [openSections, setOpenSections] = useState(
     restored?.openSections || {
       dailyOutlook: true,
+      aiSentiment: true,
       openTrades: true,
+      commandCenter: true,
       topPick: false,
       chart: false,
       marketBriefing: true,
@@ -548,6 +697,7 @@ export default function Dashboard() {
       history: false,
     }
   );
+
   const toggleSection = useCallback((key) => {
     setOpenSections((prev) => ({
       ...prev,
@@ -643,6 +793,26 @@ export default function Dashboard() {
 
   const personalBestSetup = useMemo(() => getBestSetupFromHistory(history), [history]);
   const personalBestMarket = useMemo(() => getBestMarketFromHistory(history), [history]);
+
+  const aiSentiment = useMemo(
+    () =>
+      buildAiSentimentModel({
+        ranked,
+        dailyOutlook,
+        bias,
+        marketState,
+        reversalRisk,
+        trendStrength,
+        activeTotal,
+        maxActiveTotal,
+      }),
+    [ranked, dailyOutlook, bias, marketState, reversalRisk, trendStrength, activeTotal, maxActiveTotal]
+  );
+
+  const commandCenter = useMemo(
+    () => buildCommandCenter(activeTrade, liveTracker, price),
+    [activeTrade, liveTracker, price]
+  );
 
   const analyzeBusyRef = useRef(false);
   const scanBusyRef = useRef(false);
@@ -773,7 +943,6 @@ export default function Dashboard() {
     riskPercent,
     openSections,
   ]);
-
   useEffect(() => {
     try {
       localStorage.setItem(LS_KEY_HISTORY, JSON.stringify(history.slice(-500)));
@@ -869,6 +1038,7 @@ export default function Dashboard() {
       : reversalRisk === "HIGH"
       ? "pillLoss"
       : "";
+
   const runAnalyze = useCallback(
     async (symbol, tf) => {
       if (symbol === "ALL") return null;
@@ -1039,7 +1209,7 @@ export default function Dashboard() {
     [dailyR, activeTotal, maxActiveTotal]
   );
 
-    const syncGlobalState = useCallback(async () => {
+  const syncGlobalState = useCallback(async () => {
     try {
       const data = await withTimeout(fetchGlobalState(150), 12000, "Global state");
 
@@ -1068,6 +1238,7 @@ export default function Dashboard() {
           sl: t.sl ?? null,
           tp: t.tp2 ?? t.tp ?? null,
           entry_type: pickModeLabel(t),
+          reversal_risk: t?.meta?.reversal_risk || null,
         }));
 
         setRanked((prev) => {
@@ -1093,7 +1264,7 @@ export default function Dashboard() {
             timeframe: selectedActive.timeframe,
             ...selectedActive,
           });
-          setLiveTracker(selectedActive ? {
+          setLiveTracker({
             status: selectedActive.status || "OPEN",
             direction: selectedActive.direction,
             entry: selectedActive.entry,
@@ -1105,7 +1276,7 @@ export default function Dashboard() {
             tp1_hit: !!selectedActive.tp1_hit,
             quality_grade: selectedActive.quality_grade,
             quality_stars: selectedActive.quality_stars,
-          } : null);
+          });
         }
       } else {
         setActiveTrade(null);
@@ -1119,7 +1290,8 @@ export default function Dashboard() {
       console.error("Global state sync failed:", e);
     }
   }, [selectedSymbol, timeframe, price]);
-   useEffect(() => {
+
+  useEffect(() => {
     syncGlobalState();
 
     const id = setInterval(() => {
@@ -1129,7 +1301,7 @@ export default function Dashboard() {
     }, 7000);
 
     return () => clearInterval(id);
-  }, [syncGlobalState]); 
+  }, [syncGlobalState]);
 
   const onScan = useCallback(async () => {
     if (scanBusyRef.current) return null;
@@ -1195,8 +1367,7 @@ export default function Dashboard() {
       return;
     }
     await runAnalyze(selectedSymbol, timeframe);
-  }, [runAnalyze, onScan, selectedSymbol, timeframe]);
-
+  }, [runAnalyze, onScan, selectedSymbol, timeframe]); 
   useEffect(() => {
     if (selectedSymbol === "ALL") return;
 
@@ -1279,6 +1450,7 @@ export default function Dashboard() {
       }
     };
   }, [selectedSymbol, timeframe]);
+
   useEffect(() => {
     if (!autoScanOn) return;
     const everyMs = clamp(safeNum(autoScanEverySec, 25), 5, 300) * 1000;
@@ -1501,6 +1673,20 @@ export default function Dashboard() {
       ) : null}
 
       <CollapsibleCard
+        title="AI Market Sentiment Panel"
+        isOpen={openSections.aiSentiment}
+        onToggle={() => toggleSection("aiSentiment")}
+        right={<span className={`pill ${aiSentiment.tone}`}>{aiSentiment.sentiment}</span>}
+      >
+        <div className="signalLine"><span className="smallText">AI Sentiment</span><strong>{aiSentiment.sentiment}</strong></div>
+        <div className="signalLine"><span className="smallText">Sentiment Score</span><strong>{aiSentiment.score}/100</strong></div>
+        <div className="signalLine"><span className="smallText">Tradable Markets</span><strong>{aiSentiment.tradableCount}</strong></div>
+        <div className="signalLine"><span className="smallText">Current Bias</span><strong>{bias}</strong></div>
+        <div className="signalLine"><span className="smallText">Current State</span><strong>{marketState}</strong></div>
+        <div className="reason"><span className="smallText"><b>AI Summary:</b> {aiSentiment.summary}</span></div>
+      </CollapsibleCard>
+
+      <CollapsibleCard
         title="Open Trades"
         isOpen={openSections.openTrades}
         onToggle={() => toggleSection("openTrades")}
@@ -1522,6 +1708,35 @@ export default function Dashboard() {
         ) : (
           <div className="emptyRow">No open trades right now.</div>
         )}
+      </CollapsibleCard>
+
+      <CollapsibleCard
+        title="Active Trade Command Center"
+        isOpen={openSections.commandCenter}
+        onToggle={() => toggleSection("commandCenter")}
+        right={<span className={`pill ${commandCenter.statusTone}`}>{commandCenter.title}</span>}
+      >
+        {commandCenter.stats?.length ? (
+          <div className="perfGrid">
+            {commandCenter.stats.map((s, idx) => (
+              <div key={idx} className="perfBox">
+                <div className="perfLabel">{s.label}</div>
+                <div className="perfValue" style={{ fontSize: 16 }}>{s.value}</div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="actionsBox">
+          <div className="tiny"><b>AI Command Checklist:</b></div>
+          <div className="actionsList">
+            {commandCenter.checklist.map((item, idx) => (
+              <div key={idx} className="actionChip">
+                <span>{item}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </CollapsibleCard>
 
       {topPick ? (
@@ -1712,6 +1927,7 @@ export default function Dashboard() {
             <thead>
               <tr>
                 <th>Market</th>
+                <th>Smart Label</th>
                 <th>Bias</th>
                 <th>State</th>
                 <th>Risk</th>
@@ -1733,12 +1949,15 @@ export default function Dashboard() {
                     (r.direction === "BUY" || r.direction === "SELL") &&
                     safeNum(r.confidence, 0) > 0;
 
+                  const smartLabel = getScannerSmartLabel(r, idx);
+
                   return (
                     <tr key={`${r.symbol || idx}-${idx}`} className={isHot ? "hotRow" : ""}>
                       <td className="mono">
                         {r.symbol ?? "-"} {isHot ? <span className="pill fireTiny">🔥</span> : null}
                         {r.active_trade ? <span className="pill pillWin" style={{ marginLeft: 6 }}>ACTIVE</span> : null}
                       </td>
+                      <td><span className={`pill ${smartLabel.tone}`}>{smartLabel.text}</span></td>
                       <td>{r.bias ?? "—"}</td>
                       <td className="notes">{r.market_state ?? "—"}</td>
                       <td>{r.reversal_risk ?? "—"}</td>
@@ -1759,7 +1978,7 @@ export default function Dashboard() {
                   );
                 })
               ) : (
-                <tr><td colSpan="12" className="emptyRow">No markets load yet. Scan markets or wait for sync.</td></tr>
+                <tr><td colSpan="13" className="emptyRow">No markets load yet. Scan markets or wait for sync.</td></tr>
               )}
             </tbody>
           </table>
@@ -1842,4 +2061,4 @@ export default function Dashboard() {
       ) : null}
     </div>
   );
-}
+} 

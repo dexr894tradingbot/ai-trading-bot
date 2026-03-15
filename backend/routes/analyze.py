@@ -32,14 +32,15 @@ SWING_LEN = 3
 STRUCTURE_LOOKBACK = 90
 RETEST_BARS = 8
 
-SL_BUFFER_ATR = 0.28
+SL_BUFFER_ATR = 0.35
 TRAIL_BUFFER_ATR = 0.18
 TRAIL_LOOKBACK = 8
 
 MIN_RR = 2.0
 MIN_EXPANSION_ATR = 1.10
 MIN_DISPLACEMENT_BODY_ATR = 0.45
-MIN_TREND_STRENGTH = 0.08
+MIN_TREND_STRENGTH = 0.12
+MIN_CONFIDENCE_TO_OPEN = 64
 
 MIN_SIGNAL_GAP_SEC = 45
 MIN_HOLD_SECONDS_AFTER_OPEN = 30
@@ -1223,6 +1224,14 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
     if context.get("reversal_risk") == "MEDIUM":
         confidence -= 4
 
+    if context.get("market_state") == "TRENDING CLEAN":
+        confidence += 4
+    elif context.get("market_state") == "WEAK TREND":
+        confidence -= 6
+
+    if context.get("bias") == "NEUTRAL":
+        confidence -= 8
+
     confidence = max(0, min(92, confidence))
     quality = quality_grade_from_signal(context, setup["reason"], confidence)
 
@@ -1590,6 +1599,23 @@ async def analyze_market(
 
     if hold_reason:
         signal = {"direction": "HOLD", "confidence": 0, "reason": hold_reason}
+    if signal.get("direction") in ("BUY", "SELL"):
+        if int(signal.get("confidence", 0)) < MIN_CONFIDENCE_TO_OPEN:
+            signal = {
+                "direction": "HOLD",
+                "confidence": int(signal.get("confidence", 0)),
+                "reason": f"below_min_confidence_{MIN_CONFIDENCE_TO_OPEN}",
+                "entry": signal.get("entry"),
+                "sl": signal.get("sl"),
+                "tp": signal.get("tp"),
+                "tp1": signal.get("tp1"),
+                "tp2": signal.get("tp2"),
+                "entry_type": signal.get("entry_type"),
+                "mode": signal.get("mode"),
+                "quality_score": signal.get("quality_score"),
+                "quality_grade": signal.get("quality_grade"),
+                "quality_stars": signal.get("quality_stars"),
+            }
 
     if emit_telegram:
         await maybe_emit_market_messages(symbol, timeframe, context, signal)
@@ -1597,6 +1623,7 @@ async def analyze_market(
     if manage_trade and signal.get("direction") in ("BUY", "SELL"):
         opened = await open_new_trade(symbol, timeframe, signal)
         return {
+    
             "symbol": symbol,
             "timeframe": timeframe,
             "price": round(price, 5),
