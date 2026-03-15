@@ -1756,7 +1756,22 @@ async def history(symbol: Optional[str] = None, limit: int = 50) -> Dict[str, An
 @router.get("/performance")
 async def performance(last_n: int = PERFORMANCE_REVIEW_N) -> Dict[str, Any]:
     return _performance(last_n)
+@router.get("/state")
+async def state(limit: int = 100) -> Dict[str, Any]:
+    limit = max(1, min(int(limit), 500))
 
+    active_trades = list(ACTIVE_TRADES.values())
+    recent_history = TRADE_HISTORY[-limit:]
+
+    return {
+        "active_trades": active_trades,
+        "history": recent_history,
+        "performance": _performance(PERFORMANCE_REVIEW_N),
+        "daily_R": RISK_STATE["daily_R"],
+        "active_total": _active_total(),
+        "max_active_total": MAX_ACTIVE_TOTAL,
+        "server_time": _now_ts(),
+    }
 
 @router.websocket("/ws")
 async def websocket_live(ws: WebSocket):

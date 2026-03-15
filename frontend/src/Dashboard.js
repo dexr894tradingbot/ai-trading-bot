@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Chart from "./Chart";
-import { analyzeMarket, scanMarkets, getBackendWebSocketUrl } from "./api";
+import { analyzeMarket, scanMarkets, fetchGlobalState, getBackendWebSocketUrl } from "./api";
 
 const VOLATILITY_OPTIONS = [
   { symbol: "ALL", name: "All Markets" },
@@ -223,7 +223,35 @@ function makeHistoryItem({ symbol, timeframe, signal, openedAt, closedAt, outcom
     qualityStars: signal?.quality_stars ?? "",
   };
 }
-
+function normalizeBackendHistoryItem(t = {}) {
+  return {
+    id:
+      t.trade_id ||
+      `${t.symbol || "UNK"}-${t.timeframe || "UNK"}-${t.opened_at || Date.now()}`,
+    symbol: t.symbol || "—",
+    timeframe: t.timeframe || "—",
+    direction: t.direction || "HOLD",
+    confidence: safeNum(t.confidence, 0),
+    entry: safeNum(t.entry, null),
+    sl: safeNum(t.sl, null),
+    tp: safeNum(t.tp2 ?? t.tp, null),
+    tp1: safeNum(t.tp1, null),
+    tp2: safeNum(t.tp2 ?? t.tp, null),
+    openedAt: t.opened_at ?? null,
+    closedAt: t.closed_at ?? null,
+    outcome:
+      t.status === "CLOSED"
+        ? t.outcome || "CLOSED"
+        : "OPEN",
+    closePrice: safeNum(t.closed_price, null),
+    rMult: safeNum(t.r_multiple, null),
+    reason: t.reason || "—",
+    tp1Hit: !!t.tp1_hit,
+    entryType: pickModeLabel(t),
+    qualityGrade: t.quality_grade ?? null,
+    qualityStars: t.quality_stars ?? "",
+  };
+}
 function calcPerformance(items) {
   const closed = items.filter((x) => x.outcome === "TP2" || x.outcome === "SL");
   const wins = closed.filter((x) => x.outcome === "TP2").length;
@@ -1011,6 +1039,98 @@ export default function Dashboard() {
     [dailyR, activeTotal, maxActiveTotal]
   );
 
+    const syncGlobalState = useCallback(async () => {
+    try {
+      const data = await withTimeout(fetchGlobalState(150), 12000, "Global state");
+
+      const activeTrades = Array.isArray(data?.active_trades) ? data.active_trades : [];
+      const backendHistory = Array.isArray(data?.history) ? data.history : [];
+      const perf = data?.performance || null;
+
+      setDailyR(safeNum(data?.daily_R ?? 0, 0));
+      setActiveTotal(safeNum(data?.active_total ?? 0, 0));
+      setMaxActiveTotal(safeNum(data?.max_active_total ?? 5, 5));
+
+      const normalizedHistory = backendHistory.map(normalizeBackendHistoryItem);
+      setHistory(normalizedHistory);
+
+      if (activeTrades.length) {
+        const activeRows = activeTrades.map((t) => ({
+          symbol: t.symbol,
+          direction: t.direction || "HOLD",
+          confidence: safeNum(t.confidence, 0),
+          active_trade: true,
+          market_state: t?.meta?.market_state || null,
+          preferred_setup: t?.meta?.preferred_setup || t?.mode || t?.entry_type || null,
+          quality_grade: t.quality_grade || null,
+          quality_stars: t.quality_stars || "",
+          entry: t.entry ?? null,
+          sl: t.sl ?? null,
+          tp: t.tp2 ?? t.tp ?? null,
+          entry_type: pickModeLabel(t),
+        }));
+
+        setRanked((prev) => {
+          const nonActive = Array.isArray(prev) ? prev.filter((r) => !r.active_trade) : [];
+          const merged = [...activeRows, ...nonActive];
+
+          const seen = new Set();
+          return merged.filter((r) => {
+            const key = `${r.symbol}-${r.entry_type || ""}-${r.active_trade ? "A" : "N"}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+        });
+
+        const selectedActive = activeTrades.find(
+          (t) => t.symbol === selectedSymbol && t.timeframe === timeframe
+        );
+
+        if (selectedActive) {
+          setActiveTrade({
+            symbol: selectedActive.symbol,
+            timeframe: selectedActive.timeframe,
+            ...selectedActive,
+          });
+          setLiveTracker(selectedActive ? {
+            status: selectedActive.status || "OPEN",
+            direction: selectedActive.direction,
+            entry: selectedActive.entry,
+            sl: selectedActive.sl,
+            tp1: selectedActive.tp1,
+            tp2: selectedActive.tp2 ?? selectedActive.tp,
+            current_price: price,
+            progress_pct: safeNum(selectedActive.progress_pct, 0),
+            tp1_hit: !!selectedActive.tp1_hit,
+            quality_grade: selectedActive.quality_grade,
+            quality_stars: selectedActive.quality_stars,
+          } : null);
+        }
+      } else {
+        setActiveTrade(null);
+        setLiveTracker(null);
+      }
+
+      if (perf) {
+        lastOkAtRef.current = Date.now();
+      }
+    } catch (e) {
+      console.error("Global state sync failed:", e);
+    }
+  }, [selectedSymbol, timeframe, price]);
+   useEffect(() => {
+    syncGlobalState();
+
+    const id = setInterval(() => {
+      if (!document.hidden) {
+        syncGlobalState();
+      }
+    }, 7000);
+
+    return () => clearInterval(id);
+  }, [syncGlobalState]); 
+
   const onScan = useCallback(async () => {
     if (scanBusyRef.current) return null;
     scanBusyRef.current = true;
@@ -1639,7 +1759,7 @@ export default function Dashboard() {
                   );
                 })
               ) : (
-                <tr><td colSpan="12" className="emptyRow">No scan yet. Click “Scan Markets”.</td></tr>
+                <tr><td colSpan="12" className="emptyRow">No markets load yet. Scan markets or wait for sync.</td></tr>
               )}
             </tbody>
           </table>

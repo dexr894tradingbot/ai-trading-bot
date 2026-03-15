@@ -81,7 +81,10 @@ export async function fetchPerformance(lastN = 30) {
   const safe = Math.max(1, Math.min(Number(lastN) || 30, 200));
   return getJson(`/analyze_market/performance?last_n=${safe}`);
 }
-
+export async function fetchGlobalState(limit = 100) {
+  const safe = Math.max(1, Math.min(Number(limit) || 100, 500));
+  return getJson(`/analyze_market/state?limit=${safe}`);
+}
 export function getBackendUrl() {
   return BACKEND;
 }
