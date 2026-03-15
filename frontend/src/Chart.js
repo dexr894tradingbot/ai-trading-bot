@@ -7,6 +7,25 @@ function safeNumber(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function normalizeCandle(c) {
+  const time = c.time ?? c.epoch ?? c.t ?? null;
+  const open = safeNumber(c.open ?? c.o);
+  const high = safeNumber(c.high ?? c.h);
+  const low = safeNumber(c.low ?? c.l);
+  const close = safeNumber(c.close ?? c.c);
+
+  if (
+    time === null ||
+    open === null ||
+    high === null ||
+    low === null ||
+    close === null
+  ) {
+    return null;
+  }
+
+  return { time, open, high, low, close };
+}
 export default function Chart({
   candles = [],
   supports = [],
@@ -23,6 +42,7 @@ export default function Chart({
   const chartRef = useRef(null);
   const candleSeriesRef = useRef(null);
   const priceLinesRef = useRef([]);
+  const resizeObserverRef = useRef(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -37,7 +57,7 @@ export default function Chart({
     }
 
     const chart = createChart(containerRef.current, {
-      width: containerRef.current.clientWidth,
+      width: containerRef.current.clientWidth || 300,
       height: 460,
       layout: {
         background: { type: "solid", color: "#06141d" },
@@ -50,7 +70,6 @@ export default function Chart({
       },
       rightPriceScale: {
         borderColor: "rgba(0,255,208,0.16)",
-        textColor: "#bfefff",
       },
       timeScale: {
         borderColor: "rgba(0,255,208,0.16)",
@@ -74,8 +93,7 @@ export default function Chart({
     });
 
     chartRef.current = chart;
-
-    let series;
+        let series;
     if (typeof chart.addCandlestickSeries === "function") {
       series = chart.addCandlestickSeries({
         upColor: "#2dffb4",
@@ -105,47 +123,45 @@ export default function Chart({
 
     candleSeriesRef.current = series;
 
-    const onResize = () => {
+    const handleResize = () => {
       if (!containerRef.current || !chartRef.current) return;
       chartRef.current.applyOptions({
-        width: containerRef.current.clientWidth,
+        width: containerRef.current.clientWidth || 300,
       });
       chartRef.current.timeScale().fitContent();
     };
 
-    window.addEventListener("resize", onResize);
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserverRef.current = new ResizeObserver(() => {
+        handleResize();
+      });
+      resizeObserverRef.current.observe(containerRef.current);
+    }
+
+    window.addEventListener("resize", handleResize);
 
     return () => {
-      window.removeEventListener("resize", onResize);
+      window.removeEventListener("resize", handleResize);
+
+      if (resizeObserverRef.current) {
+        try {
+          resizeObserverRef.current.disconnect();
+        } catch {}
+      }
+
       try {
         chart.remove();
       } catch {}
     };
-  }, [symbol]);
-
+  }, [symbol, timeframe]);
   useEffect(() => {
     const series = candleSeriesRef.current;
     const chart = chartRef.current;
     if (!series || !chart) return;
 
-    const arr = Array.isArray(candles) ? candles : [];
-
-    const formatted = arr
-      .map((c) => ({
-        time: c.time ?? c.epoch ?? c.t ?? null,
-        open: safeNumber(c.open ?? c.o),
-        high: safeNumber(c.high ?? c.h),
-        low: safeNumber(c.low ?? c.l),
-        close: safeNumber(c.close ?? c.c),
-      }))
-      .filter(
-        (c) =>
-          c.time !== null &&
-          c.open !== null &&
-          c.high !== null &&
-          c.low !== null &&
-          c.close !== null
-      );
+    const formatted = (Array.isArray(candles) ? candles : [])
+      .map(normalizeCandle)
+      .filter(Boolean);
 
     if (!formatted.length) {
       series.setData([]);
@@ -154,7 +170,7 @@ export default function Chart({
 
     series.setData(formatted);
     chart.timeScale().fitContent();
-  }, [candles, symbol]);
+  }, [candles, symbol, timeframe]);
 
   useEffect(() => {
     const series = candleSeriesRef.current;
@@ -167,7 +183,7 @@ export default function Chart({
     }
     priceLinesRef.current = [];
 
-    const addLine = (price, title, color) => {
+    const addLine = (price, title, color, lineWidth = 2, lineStyle = 2) => {
       const n = safeNumber(price);
       if (n === null) return;
 
@@ -175,8 +191,8 @@ export default function Chart({
         const line = series.createPriceLine({
           price: n,
           color,
-          lineWidth: 2,
-          lineStyle: 2,
+          lineWidth,
+          lineStyle,
           axisLabelVisible: true,
           title,
         });
@@ -187,16 +203,20 @@ export default function Chart({
     const supportList = Array.isArray(supports) ? supports : [];
     const resistanceList = Array.isArray(resistances) ? resistances : [];
 
-    supportList.slice(0, 3).forEach((s, i) => addLine(s, `S${i + 1}`, "#1fd6ff"));
-    resistanceList.slice(0, 3).forEach((r, i) => addLine(r, `R${i + 1}`, "#ffd76a"));
+    supportList.slice(0, 3).forEach((s, i) => {
+      addLine(s, `S${i + 1}`, "#1fd6ff", 1, 2);
+    });
 
-    addLine(entry, "ENTRY", "#2dffb4");
-    addLine(sl, "SL", "#ff5f8a");
-    addLine(tp, "TP", "#ffd76a");
-    addLine(tp1, "TP1", "#8affc1");
-    addLine(tp2, "TP2", "#ffe082");
-  }, [supports, resistances, entry, sl, tp, tp1, tp2, symbol]);
+    resistanceList.slice(0, 3).forEach((r, i) => {
+      addLine(r, `R${i + 1}`, "#ffd76a", 1, 2);
+    });
 
+    addLine(entry, "ENTRY", "#2dffb4", 2, 0);
+    addLine(sl, "SL", "#ff5f8a", 2, 0);
+    addLine(tp, "TP", "#ffd76a", 2, 0);
+    addLine(tp1, "TP1", "#8affc1", 2, 1);
+    addLine(tp2, "TP2", "#ffe082", 2, 1);
+  }, [supports, resistances, entry, sl, tp, tp1, tp2, symbol, timeframe]);
   return (
     <div
       ref={containerRef}
@@ -210,4 +230,4 @@ export default function Chart({
       }}
     />
   );
-}
+}    

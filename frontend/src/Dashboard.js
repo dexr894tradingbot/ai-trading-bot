@@ -1,4 +1,3 @@
-// frontend/src/Dashboard.js
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Chart from "./Chart";
 import { analyzeMarket, scanMarkets, getBackendWebSocketUrl } from "./api";
@@ -21,8 +20,8 @@ const TIMEFRAMES = [
   { value: "4h", label: "4h" },
 ];
 
-const LS_KEY_STATE = "dex_bot_ui_state_v4";
-const LS_KEY_HISTORY = "dex_bot_history_v1";
+const LS_KEY_STATE = "dex_bot_ui_state_v5";
+const LS_KEY_HISTORY = "dex_bot_history_v2";
 
 function safeNum(x, fallback = 0) {
   const n = Number(x);
@@ -153,7 +152,6 @@ function normalizeAnalyzeResponse(data) {
   const confidence = safeNum(sig?.confidence ?? sig?.score ?? 0, 0);
   const alignment = normalizeAlignment(data);
   const briefing = normalizeBriefing(data?.briefing || {});
-
   const maxActive =
     safeNum(data?.max_active_total ?? data?.limits?.max_active_total ?? 5, 5) || 5;
 
@@ -180,7 +178,6 @@ function normalizeAnalyzeResponse(data) {
     briefing,
     active: !!data?.active,
     actions: Array.isArray(data?.actions) ? data.actions : [],
-    pending: data?.pending ?? null,
     closedTrade: data?.closed_trade ?? null,
     liveTracker: data?.live_tracker ?? null,
     dailyOutlook: data?.daily_outlook ?? null,
@@ -188,6 +185,7 @@ function normalizeAnalyzeResponse(data) {
     maxActive,
   };
 }
+
 function makeHistoryItem({ symbol, timeframe, signal, openedAt, closedAt, outcome, closePrice }) {
   const entry = safeNum(signal?.entry, null);
   const sl = safeNum(signal?.sl, null);
@@ -224,7 +222,6 @@ function makeHistoryItem({ symbol, timeframe, signal, openedAt, closedAt, outcom
     qualityStars: signal?.quality_stars ?? "",
   };
 }
-
 function calcPerformance(items) {
   const closed = items.filter((x) => x.outcome === "TP2" || x.outcome === "SL");
   const wins = closed.filter((x) => x.outcome === "TP2").length;
@@ -244,6 +241,7 @@ function calcPerformance(items) {
   let bestLoseStreak = 0;
   let curW = 0;
   let curL = 0;
+
   for (const t of closed) {
     if (t.outcome === "TP2") {
       curW += 1;
@@ -328,29 +326,12 @@ function buildAiExplanation({
   lines.push(`Structure is ${structure || "-"}.`);
   lines.push(`Market state is ${marketState || "-"}.`);
 
-  if (reversalRisk && reversalRisk !== "-") {
-    lines.push(`Reversal risk is ${reversalRisk}.`);
-  }
-
-  if (areaOfInterest && areaOfInterest !== "-") {
-    lines.push(`Main area of interest is ${areaOfInterest}.`);
-  }
-
-  if (preferredSetup && preferredSetup !== "-") {
-    lines.push(`Preferred setup: ${preferredSetup}.`);
-  }
-
-  if (confirmationNeeded && confirmationNeeded !== "-") {
-    lines.push(`Confirmation needed: ${confirmationNeeded}.`);
-  }
-
-  if (liquidityAbove && liquidityAbove !== "-") {
-    lines.push(`Liquidity above sits near ${liquidityAbove}.`);
-  }
-
-  if (liquidityBelow && liquidityBelow !== "-") {
-    lines.push(`Liquidity below sits near ${liquidityBelow}.`);
-  }
+  if (reversalRisk && reversalRisk !== "-") lines.push(`Reversal risk is ${reversalRisk}.`);
+  if (areaOfInterest && areaOfInterest !== "-") lines.push(`Main area of interest is ${areaOfInterest}.`);
+  if (preferredSetup && preferredSetup !== "-") lines.push(`Preferred setup: ${preferredSetup}.`);
+  if (confirmationNeeded && confirmationNeeded !== "-") lines.push(`Confirmation needed: ${confirmationNeeded}.`);
+  if (liquidityAbove && liquidityAbove !== "-") lines.push(`Liquidity above sits near ${liquidityAbove}.`);
+  if (liquidityBelow && liquidityBelow !== "-") lines.push(`Liquidity below sits near ${liquidityBelow}.`);
 
   return lines.join(" ");
 }
@@ -414,10 +395,7 @@ function CollapsibleCard({
           textAlign: "left",
         }}
       >
-        <div
-          className="cardHeader"
-          style={{ marginBottom: isOpen ? 14 : 0 }}
-        >
+        <div className="cardHeader" style={{ marginBottom: isOpen ? 14 : 0 }}>
           <div
             className="collapseLeft"
             style={{ display: "flex", alignItems: "center", gap: 10 }}
@@ -428,10 +406,7 @@ function CollapsibleCard({
             >
               {isOpen ? "▼" : "▶"}
             </span>
-            <h3
-              className="collapseTitle"
-              style={{ margin: 0, fontSize: "inherit" }}
-            >
+            <h3 className="collapseTitle" style={{ margin: 0, fontSize: "inherit" }}>
               {title}
             </h3>
           </div>
@@ -499,8 +474,7 @@ export default function Dashboard() {
   const [briefResistance, setBriefResistance] = useState(restored?.briefResistance || "-");
   const [liquidityBelow, setLiquidityBelow] = useState(restored?.liquidityBelow || "-");
   const [liquidityAbove, setLiquidityAbove] = useState(restored?.liquidityAbove || "-");
-
-  const [scanLoading, setScanLoading] = useState(false);
+    const [scanLoading, setScanLoading] = useState(false);
   const [ranked, setRanked] = useState(restored?.ranked || []);
   const [dailyOutlook, setDailyOutlook] = useState(restored?.dailyOutlook || null);
   const [liveTracker, setLiveTracker] = useState(restored?.liveTracker || null);
@@ -551,6 +525,7 @@ export default function Dashboard() {
       [key]: !prev[key],
     }));
   }, []);
+
   const performance = useMemo(() => calcPerformance(history), [history]);
   const symbolsList = useMemo(() => VOLATILITY_OPTIONS.map((v) => v.symbol), []);
   const selectedName =
@@ -778,16 +753,12 @@ export default function Dashboard() {
       const liveAge = now - (lastLiveAtRef.current || 0);
       const okAge = now - (lastOkAtRef.current || 0);
 
-      if (liveAge <= 8000 || okAge <= 30000) {
-        setStatus("LIVE");
-      } else {
-        setStatus("IDLE");
-      }
+      if (liveAge <= 8000 || okAge <= 30000) setStatus("LIVE");
+      else setStatus("IDLE");
     }, 1000);
 
     return () => clearInterval(id);
   }, []);
-
   useEffect(() => {
     setCandles([]);
     setSupports([]);
@@ -862,19 +833,18 @@ export default function Dashboard() {
       : reversalRisk === "HIGH"
       ? "pillLoss"
       : "";
+
   const runAnalyze = useCallback(
     async (symbol, tf) => {
       if (busyRef.current) return null;
 
       const requestId = ++analyzeRequestRef.current;
-
       busyRef.current = true;
       setError("");
       setStatus("ANALYZING");
 
       try {
         const data = await withTimeout(analyzeMarket(symbol, tf), 15000, "Analyze");
-
         if (requestId !== analyzeRequestRef.current) return null;
 
         const norm = normalizeAnalyzeResponse(data);
@@ -1011,6 +981,7 @@ export default function Dashboard() {
           ) {
             openTradeRef.current = null;
           }
+
           setActiveTrade(null);
           setLiveTracker(null);
         }
@@ -1061,7 +1032,7 @@ export default function Dashboard() {
 
       const activeRow = newRanked.find((r) => r.active_trade);
       if (activeRow?.symbol) {
-        setSelectedSymbol(activeRow.symbol);
+        if (activeRow.symbol !== selectedSymbol) setSelectedSymbol(activeRow.symbol);
         busyRef.current = false;
         return await runAnalyze(activeRow.symbol, timeframe);
       }
@@ -1093,8 +1064,7 @@ export default function Dashboard() {
   const onAnalyze = useCallback(async () => {
     await runAnalyze(selectedSymbol, timeframe);
   }, [runAnalyze, selectedSymbol, timeframe]);
-
-  useEffect(() => {
+   useEffect(() => {
     let closedByUser = false;
 
     function connect() {
@@ -1228,7 +1198,7 @@ export default function Dashboard() {
       ? `${activeTrade?.alignment?.label ? `${activeTrade.alignment.label} ` : ""}${Math.round(activeTrade.alignment.score)}%`
       : null;
 
-  return (      
+  return (
     <div className="layout">
       <div className="card topCard">
         <div className="topRow">
@@ -1333,12 +1303,7 @@ export default function Dashboard() {
 
           <div className="miniField">
             <span className="miniLabel">every</span>
-            <input
-              className="miniInput"
-              value={autoScanEverySec}
-              onChange={(e) => setAutoScanEverySec(e.target.value)}
-              inputMode="numeric"
-            />
+            <input className="miniInput" value={autoScanEverySec} onChange={(e) => setAutoScanEverySec(e.target.value)} inputMode="numeric" />
             <span className="miniLabel">s</span>
           </div>
 
@@ -1354,12 +1319,7 @@ export default function Dashboard() {
 
           <div className="miniField">
             <span className="miniLabel">every</span>
-            <input
-              className="miniInput"
-              value={autoAnalyzeEverySec}
-              onChange={(e) => setAutoAnalyzeEverySec(e.target.value)}
-              inputMode="numeric"
-            />
+            <input className="miniInput" value={autoAnalyzeEverySec} onChange={(e) => setAutoAnalyzeEverySec(e.target.value)} inputMode="numeric" />
             <span className="miniLabel">s</span>
           </div>
 
@@ -1372,22 +1332,10 @@ export default function Dashboard() {
         {error ? <div className="errorBox">Error: {error}</div> : null}
 
         <div className="perfGrid" style={{ marginTop: 14 }}>
-          <div className="perfBox">
-            <div className="perfLabel">Today Win %</div>
-            <div className="perfValue">{performance.winRate}%</div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Closed Trades</div>
-            <div className="perfValue">{performance.closedCount}</div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Sum R</div>
-            <div className="perfValue">{performance.sumR}</div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Best Setup</div>
-            <div className="perfValue" style={{ fontSize: 14 }}>{personalBestSetup}</div>
-          </div>
+          <div className="perfBox"><div className="perfLabel">Today Win %</div><div className="perfValue">{performance.winRate}%</div></div>
+          <div className="perfBox"><div className="perfLabel">Closed Trades</div><div className="perfValue">{performance.closedCount}</div></div>
+          <div className="perfBox"><div className="perfLabel">Sum R</div><div className="perfValue">{performance.sumR}</div></div>
+          <div className="perfBox"><div className="perfLabel">Best Setup</div><div className="perfValue" style={{ fontSize: 14 }}>{personalBestSetup}</div></div>
         </div>
       </div>
 
@@ -1404,12 +1352,8 @@ export default function Dashboard() {
           <div className="signalLine"><span className="smallText">Confidence</span><strong>{safeNum(dailyOutlook.best_confidence, 0)}%</strong></div>
           <div className="signalLine"><span className="smallText">Market State</span><strong>{dailyOutlook.market_state || "-"}</strong></div>
           <div className="signalLine"><span className="smallText">AOI</span><strong>{dailyOutlook.area_of_interest || "-"}</strong></div>
-          <div className="reason">
-            <span className="smallText"><b>Preferred Setup:</b> {dailyOutlook.preferred_setup || "-"}</span>
-          </div>
-          <div className="reason">
-            <span className="smallText"><b>Note:</b> {dailyOutlook.note || "-"}</span>
-          </div>
+          <div className="reason"><span className="smallText"><b>Preferred Setup:</b> {dailyOutlook.preferred_setup || "-"}</span></div>
+          <div className="reason"><span className="smallText"><b>Note:</b> {dailyOutlook.note || "-"}</span></div>
         </CollapsibleCard>
       ) : null}
 
@@ -1470,11 +1414,7 @@ export default function Dashboard() {
           title="Chart"
           isOpen={openSections.chart}
           onToggle={() => toggleSection("chart")}
-          right={
-            <div className="tiny">
-              Candles: {candles?.length || 0} • S: {supports?.length || 0} • R: {resistances?.length || 0}
-            </div>
-          }
+          right={<div className="tiny">Candles: {candles?.length || 0} • S: {supports?.length || 0} • R: {resistances?.length || 0}</div>}
         >
           <div className="chartWrap">
             <Chart
@@ -1504,19 +1444,9 @@ export default function Dashboard() {
           <div className="signalLine"><span className="smallText">Bias</span><strong>{bias}</strong></div>
           <div className="signalLine"><span className="smallText">Structure</span><strong>{structure}</strong></div>
           <div className="signalLine"><span className="smallText">Previous Trend</span><strong>{previousTrend}</strong></div>
-          <div className="signalLine">
-            <span className="smallText">Trend Strength</span>
-            <strong>{trendStrength === null ? "-" : trendStrength}</strong>
-          </div>
-          <div className="signalLine">
-            <span className="smallText">Market State</span>
-            <strong><span className={`pill ${marketStateTone}`}>{marketState}</span></strong>
-          </div>
-          <div className="signalLine">
-            <span className="smallText">Reversal Risk</span>
-            <strong><span className={`pill ${reversalTone}`}>{reversalRisk}</span></strong>
-          </div>
-
+          <div className="signalLine"><span className="smallText">Trend Strength</span><strong>{trendStrength === null ? "-" : trendStrength}</strong></div>
+          <div className="signalLine"><span className="smallText">Market State</span><strong><span className={`pill ${marketStateTone}`}>{marketState}</span></strong></div>
+          <div className="signalLine"><span className="smallText">Reversal Risk</span><strong><span className={`pill ${reversalTone}`}>{reversalRisk}</span></strong></div>
           <div className="signalLine"><span className="smallText">Buyer Zone</span><strong>{buyerZone}</strong></div>
           <div className="signalLine"><span className="smallText">Seller Zone</span><strong>{sellerZone}</strong></div>
           <div className="signalLine"><span className="smallText">AOI</span><strong>{areaOfInterest}</strong></div>
@@ -1524,16 +1454,9 @@ export default function Dashboard() {
           <div className="signalLine"><span className="smallText">Resistance</span><strong>{briefResistance}</strong></div>
           <div className="signalLine"><span className="smallText">Liquidity Below</span><strong>{liquidityBelow}</strong></div>
           <div className="signalLine"><span className="smallText">Liquidity Above</span><strong>{liquidityAbove}</strong></div>
-
-          <div className="reason">
-            <span className="smallText"><b>Preferred Setup:</b> {preferredSetup}</span>
-          </div>
-          <div className="reason">
-            <span className="smallText"><b>Confirmation Needed:</b> {confirmationNeeded}</span>
-          </div>
-          <div className="reason">
-            <span className="smallText"><b>Invalidation:</b> {invalidation}</span>
-          </div>
+          <div className="reason"><span className="smallText"><b>Preferred Setup:</b> {preferredSetup}</span></div>
+          <div className="reason"><span className="smallText"><b>Confirmation Needed:</b> {confirmationNeeded}</span></div>
+          <div className="reason"><span className="smallText"><b>Invalidation:</b> {invalidation}</span></div>
 
           <hr style={{ opacity: 0.15, margin: "14px 0" }} />
 
@@ -1568,15 +1491,11 @@ export default function Dashboard() {
           <div className="signalLine"><span className="smallText">TP1</span><strong>{tp1 ?? "-"}</strong></div>
           <div className="signalLine"><span className="smallText">TP2</span><strong>{tp2 ?? "-"}</strong></div>
 
-          <div className="reason">
-            <span className="smallText"><b>Reason:</b> {reason}</span>
-          </div>
+          <div className="reason"><span className="smallText"><b>Reason:</b> {reason}</span></div>
 
           <div className="reason" style={{ marginTop: 12 }}>
             <span className="smallText"><b>AI Trade Explanation:</b></span>
-            <div className="tiny note" style={{ marginTop: 6 }}>
-              {aiExplanation}
-            </div>
+            <div className="tiny note" style={{ marginTop: 6 }}>{aiExplanation}</div>
           </div>
 
           {lastActions?.length ? (
@@ -1605,46 +1524,20 @@ export default function Dashboard() {
         <div className="togglesRow" style={{ alignItems: "flex-end" }}>
           <div className="miniField">
             <span className="miniLabel">Account</span>
-            <input
-              className="miniInput"
-              value={accountSize}
-              onChange={(e) => setAccountSize(e.target.value)}
-              inputMode="decimal"
-            />
+            <input className="miniInput" value={accountSize} onChange={(e) => setAccountSize(e.target.value)} inputMode="decimal" />
           </div>
 
           <div className="miniField">
             <span className="miniLabel">Risk %</span>
-            <input
-              className="miniInput"
-              value={riskPercent}
-              onChange={(e) => setRiskPercent(e.target.value)}
-              inputMode="decimal"
-            />
+            <input className="miniInput" value={riskPercent} onChange={(e) => setRiskPercent(e.target.value)} inputMode="decimal" />
           </div>
         </div>
 
         <div className="perfGrid" style={{ marginTop: 14 }}>
-          <div className="perfBox">
-            <div className="perfLabel">Risk Amount</div>
-            <div className="perfValue">${safeNum(riskAmount, 0).toFixed(2)}</div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">R:R</div>
-            <div className="perfValue">{rrMultiple === null ? "—" : rrMultiple.toFixed(2)}</div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Est. TP1</div>
-            <div className="perfValue">
-              {estimatedTp1Profit === null ? "—" : `$${estimatedTp1Profit.toFixed(2)}`}
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Est. TP2</div>
-            <div className="perfValue">
-              {estimatedTp2Profit === null ? "—" : `$${estimatedTp2Profit.toFixed(2)}`}
-            </div>
-          </div>
+          <div className="perfBox"><div className="perfLabel">Risk Amount</div><div className="perfValue">${safeNum(riskAmount, 0).toFixed(2)}</div></div>
+          <div className="perfBox"><div className="perfLabel">R:R</div><div className="perfValue">{rrMultiple === null ? "—" : rrMultiple.toFixed(2)}</div></div>
+          <div className="perfBox"><div className="perfLabel">Est. TP1</div><div className="perfValue">{estimatedTp1Profit === null ? "—" : `$${estimatedTp1Profit.toFixed(2)}`}</div></div>
+          <div className="perfBox"><div className="perfLabel">Est. TP2</div><div className="perfValue">{estimatedTp2Profit === null ? "—" : `$${estimatedTp2Profit.toFixed(2)}`}</div></div>
         </div>
       </CollapsibleCard>
 
@@ -1685,9 +1578,7 @@ export default function Dashboard() {
                     <tr key={`${r.symbol || idx}-${idx}`} className={isHot ? "hotRow" : ""}>
                       <td className="mono">
                         {r.symbol ?? "-"} {isHot ? <span className="pill fireTiny">🔥</span> : null}
-                        {r.active_trade ? (
-                          <span className="pill pillWin" style={{ marginLeft: 6 }}>ACTIVE</span>
-                        ) : null}
+                        {r.active_trade ? <span className="pill pillWin" style={{ marginLeft: 6 }}>ACTIVE</span> : null}
                       </td>
                       <td>{r.bias ?? "—"}</td>
                       <td className="notes">{r.market_state ?? "—"}</td>
@@ -1709,9 +1600,7 @@ export default function Dashboard() {
                   );
                 })
               ) : (
-                <tr>
-                  <td colSpan="12" className="emptyRow">No scan yet. Click “Scan Markets”.</td>
-                </tr>
+                <tr><td colSpan="12" className="emptyRow">No scan yet. Click “Scan Markets”.</td></tr>
               )}
             </tbody>
           </table>
@@ -1724,11 +1613,7 @@ export default function Dashboard() {
           className="historyCard"
           isOpen={openSections.history}
           onToggle={() => toggleSection("history")}
-          right={
-            <div className="tiny">
-              Closed: {performance.closedCount} • Wins: {performance.wins} • Losses: {performance.losses} • Win%: {performance.winRate}% • Sum R: {performance.sumR}
-            </div>
-          }
+          right={<div className="tiny">Closed: {performance.closedCount} • Wins: {performance.wins} • Losses: {performance.losses} • Win%: {performance.winRate}% • Sum R: {performance.sumR}</div>}
         >
           <div className="perfGrid">
             <div className="perfBox"><div className="perfLabel">Avg R</div><div className="perfValue">{performance.avgR}</div></div>

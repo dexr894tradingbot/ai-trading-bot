@@ -22,7 +22,7 @@ router = APIRouter()
 ENTRY_TF = "5m"
 BIAS_TF_1 = "15m"
 BIAS_TF_2 = "1h"
-FINE_TUNE_TF = "1m"  # optional micro-timing context only
+FINE_TUNE_TF = "1m"
 
 EMA_FAST = 20
 EMA_SLOW = 50
@@ -62,13 +62,11 @@ POOL_LOOKBACK = 160
 POOL_CLUSTER_ATR = 0.24
 POOL_MIN_TOUCHES = 2
 
-# Smart Telegram throttling
 TELEGRAM_MIN_BRIEFING_GAP_SEC = 1800
 TELEGRAM_MIN_WATCH_GAP_SEC = 600
 TELEGRAM_MIN_READY_GAP_SEC = 180
 TELEGRAM_MIN_INVALIDATED_GAP_SEC = 300
 
-# Optional progress alerts if you ever want to use them later
 PROGRESS_ALERT_STEPS = [25, 50, 75, 90]
 
 ALLOWED_TFS = {"1m", "5m", "15m", "30m", "1h", "2h", "4h"}
@@ -239,7 +237,7 @@ def quality_grade_from_signal(
     elif market_state == "TRENDING PULLBACK":
         score += 3
     elif market_state == "WEAK TREND":
-        score -=6    
+        score -= 6
 
     if reversal_risk == "LOW":
         score += 2
@@ -358,8 +356,6 @@ def build_daily_market_outlook(ranked_rows: List[Dict[str, Any]]) -> Dict[str, A
         "preferred_setup": best.get("preferred_setup", "-"),
         "note": note,
     }
-
-
 # =========================================================
 # TELEGRAM / PERFORMANCE
 # =========================================================
@@ -499,6 +495,7 @@ def _performance(last_n: int) -> Dict[str, Any]:
         "total_R": round(total_r, 3),
     }
 
+
 # =========================================================
 # INDICATORS
 # =========================================================
@@ -598,8 +595,6 @@ def get_trend_memory(candles: List[Dict[str, float]]) -> Dict[str, Any]:
         "ema20": ema20_now,
         "ema50": ema50_now,
     }
-
-
 # =========================================================
 # SWINGS / STRUCTURE / ZONES
 # =========================================================
@@ -987,8 +982,6 @@ def build_market_context(
         "trend_fine": trend_fine,
         "atr_value": atr_value,
     }
-
-
 # =========================================================
 # TRADE SETUP DETECTION
 # =========================================================
@@ -1248,7 +1241,6 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
         "quality_score": quality["quality_score"],
         "quality_grade": quality["quality_grade"],
         "quality_stars": quality["quality_stars"],
-        
         "meta": {
             "bias": context["bias"],
             "structure": context["structure"],
@@ -1321,20 +1313,7 @@ async def close_trade(symbol: str, timeframe: str, trade: Dict[str, Any], outcom
         text=build_closed_message(symbol, timeframe, trade, outcome, price),
     )
     return trade
-def build_live_tracker(trade: Dict[str, Any], current_price: float) -> Dict[str, Any]:
-    return {
-        "status": trade.get("status", "OPEN"),
-        "direction": trade.get("direction"),
-        "entry": trade.get("entry"),
-        "sl": trade.get("sl"),
-        "tp1": trade.get("tp1"),
-        "tp2": trade.get("tp2", trade.get("tp")),
-        "current_price": round(current_price, 5),
-        "progress_pct": round(float(trade.get("progress_pct", 0.0)), 2),
-        "tp1_hit": bool(trade.get("tp1_hit", False)),
-        "quality_grade": trade.get("quality_grade"),
-        "quality_stars": trade.get("quality_stars"),
-    }
+
 
 async def manage_active_trade(
     symbol: str,
@@ -1447,8 +1426,6 @@ async def manage_active_trade(
             break
 
     return {"signal": trade, "active": True, "actions": actions}
-
-
 # =========================================================
 # TELEGRAM SMART MARKET STATE
 # =========================================================
@@ -1505,7 +1482,11 @@ async def maybe_emit_market_messages(
 # =========================================================
 # ANALYZE CORE + ROUTES + WS
 # =========================================================
-async def analyze_market(req: AnalyzeRequest):
+async def analyze_market(
+    req: AnalyzeRequest,
+    manage_trade: bool = True,
+    emit_telegram: bool = True,
+):
     _reset_daily_if_needed()
 
     symbol = req.symbol.strip()
@@ -1553,29 +1534,48 @@ async def analyze_market(req: AnalyzeRequest):
     }
 
     if key in ACTIVE_TRADES:
-        managed = await manage_active_trade(symbol, timeframe, candles_entry, ACTIVE_TRADES[key])
-        tracker_source = managed.get("signal", {})
-        live_tracker = build_live_trade_tracker(tracker_source, price) if tracker_source else None
+        if manage_trade:
+            managed = await manage_active_trade(symbol, timeframe, candles_entry, ACTIVE_TRADES[key])
+            tracker_source = managed.get("signal", {})
+            live_tracker = build_live_trade_tracker(tracker_source, price) if tracker_source else None
 
-        result = {
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "price": round(price, 5),
-            "candles": candles_entry,
-            "levels": levels,
-            "briefing": context,
-            "signal": managed.get("signal", {"direction": "HOLD", "confidence": 0}),
-            "live_tracker": live_tracker,
-            "daily_outlook": None,
-            "active": managed.get("active", False),
-            "actions": managed.get("actions", []),
-            "daily_R": RISK_STATE["daily_R"],
-            "active_total": _active_total(),
-            "max_active_total": MAX_ACTIVE_TOTAL,
-        }
-        if managed.get("closed_trade"):
-            result["closed_trade"] = managed["closed_trade"]
-        return result
+            result = {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "price": round(price, 5),
+                "candles": candles_entry,
+                "levels": levels,
+                "briefing": context,
+                "signal": managed.get("signal", {"direction": "HOLD", "confidence": 0}),
+                "live_tracker": live_tracker,
+                "daily_outlook": None,
+                "active": managed.get("active", False),
+                "actions": managed.get("actions", []),
+                "daily_R": RISK_STATE["daily_R"],
+                "active_total": _active_total(),
+                "max_active_total": MAX_ACTIVE_TOTAL,
+            }
+            if managed.get("closed_trade"):
+                result["closed_trade"] = managed["closed_trade"]
+            return result
+        else:
+            active_trade = ACTIVE_TRADES[key]
+            return {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "price": round(price, 5),
+                "candles": candles_entry,
+                "levels": levels,
+                "briefing": context,
+                "signal": active_trade,
+                "live_tracker": build_live_trade_tracker(active_trade, price),
+                "daily_outlook": None,
+                "active": True,
+                "actions": [],
+                "daily_R": RISK_STATE["daily_R"],
+                "active_total": _active_total(),
+                "max_active_total": MAX_ACTIVE_TOTAL,
+            }
 
     hold_reason = ""
     if _active_total() >= MAX_ACTIVE_TOTAL:
@@ -1591,9 +1591,10 @@ async def analyze_market(req: AnalyzeRequest):
     if hold_reason:
         signal = {"direction": "HOLD", "confidence": 0, "reason": hold_reason}
 
-    await maybe_emit_market_messages(symbol, timeframe, context, signal)
+    if emit_telegram:
+        await maybe_emit_market_messages(symbol, timeframe, context, signal)
 
-    if signal.get("direction") in ("BUY", "SELL"):
+    if manage_trade and signal.get("direction") in ("BUY", "SELL"):
         opened = await open_new_trade(symbol, timeframe, signal)
         return {
             "symbol": symbol,
@@ -1603,7 +1604,7 @@ async def analyze_market(req: AnalyzeRequest):
             "levels": levels,
             "briefing": context,
             "signal": opened,
-            "live_tracker": None,
+            "live_tracker": build_live_trade_tracker(opened, price),
             "daily_outlook": None,
             "active": True,
             "actions": [],
@@ -1620,7 +1621,7 @@ async def analyze_market(req: AnalyzeRequest):
         "levels": levels,
         "briefing": context,
         "signal": signal,
-        "live_tracker":  None,
+        "live_tracker": None,
         "daily_outlook": None,
         "active": False,
         "actions": [],
@@ -1644,7 +1645,11 @@ async def scan(req: ScanRequest):
 
     for sym in req.symbols:
         try:
-            res = await analyze_market(AnalyzeRequest(symbol=sym, timeframe=timeframe))
+            res = await analyze_market(
+                AnalyzeRequest(symbol=sym, timeframe=timeframe),
+                manage_trade=False,
+                emit_telegram=False,
+            )
             sig = res.get("signal", {})
             brief = res.get("briefing", {})
             rows.append({
