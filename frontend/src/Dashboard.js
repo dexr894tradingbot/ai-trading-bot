@@ -1657,6 +1657,7 @@ export default function Dashboard() {
       {dailyOutlook ? (
         <CollapsibleCard
           title="Daily Market Outlook"
+          className="dailyOutlookCard"
           isOpen={openSections.dailyOutlook}
           onToggle={() => toggleSection("dailyOutlook")}
           right={<div className="tiny">Scanner overview</div>}
@@ -1673,7 +1674,8 @@ export default function Dashboard() {
       ) : null}
 
       <CollapsibleCard
-        title="AI Market Sentiment Panel"
+        className="sentimentCard"
+
         isOpen={openSections.aiSentiment}
         onToggle={() => toggleSection("aiSentiment")}
         right={<span className={`pill ${aiSentiment.tone}`}>{aiSentiment.sentiment}</span>}
@@ -1688,6 +1690,7 @@ export default function Dashboard() {
 
       <CollapsibleCard
         title="Open Trades"
+        className="openTradesCard"
         isOpen={openSections.openTrades}
         onToggle={() => toggleSection("openTrades")}
         right={<div className="tiny">{openMarkets.length} open</div>}
@@ -1712,6 +1715,7 @@ export default function Dashboard() {
 
       <CollapsibleCard
         title="Active Trade Command Center"
+        className="commandCenterCard"
         isOpen={openSections.commandCenter}
         onToggle={() => toggleSection("commandCenter")}
         right={<span className={`pill ${commandCenter.statusTone}`}>{commandCenter.title}</span>}
@@ -1742,7 +1746,7 @@ export default function Dashboard() {
       {topPick ? (
         <CollapsibleCard
           title="Top Pick"
-          className="topPick"
+          className="topPickCard"
           isOpen={openSections.topPick}
           onToggle={() => toggleSection("topPick")}
           right={<div className="tiny">Best live setup</div>}
@@ -1770,6 +1774,7 @@ export default function Dashboard() {
       <div className="mainGrid">
         <CollapsibleCard
           title="Chart"
+          className="chartCard"
           isOpen={openSections.chart}
           onToggle={() => toggleSection("chart")}
           right={<div className="tiny">Candles: {candles?.length || 0} • S: {supports?.length || 0} • R: {resistances?.length || 0}</div>}
@@ -1809,6 +1814,7 @@ export default function Dashboard() {
 
         <CollapsibleCard
           title="Market Briefing"
+          className="marketBriefingCard"
           isOpen={openSections.marketBriefing}
           onToggle={() => toggleSection("marketBriefing")}
           right={<span className={`badge ${status === "LIVE" ? "live" : ""}`}>{status}</span>}
@@ -1891,6 +1897,7 @@ export default function Dashboard() {
 
       <CollapsibleCard
         title="Risk Calculator"
+        className="riskCard"
         isOpen={openSections.riskCalculator}
         onToggle={() => toggleSection("riskCalculator")}
         right={<div className="tiny">Premium Tool</div>}
