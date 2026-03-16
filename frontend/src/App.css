@@ -1065,3 +1065,62 @@ body::after{
     max-width:220px;
   }
 }
+/* =========================
+   SECTION GLOW COLORS
+   ========================= */
+
+.glow-gold{
+  border-color: rgba(255,215,106,0.35);
+  box-shadow:
+    0 0 20px rgba(255,215,106,0.18),
+    inset 0 0 20px rgba(255,215,106,0.05);
+}
+
+.glow-green{
+  border-color: rgba(93,255,154,0.35);
+  box-shadow:
+    0 0 20px rgba(93,255,154,0.18),
+    inset 0 0 20px rgba(93,255,154,0.05);
+}
+
+.glow-cyan{
+  border-color: rgba(0,255,213,0.35);
+  box-shadow:
+    0 0 20px rgba(0,255,213,0.18),
+    inset 0 0 20px rgba(0,255,213,0.05);
+}
+
+.glow-red{
+  border-color: rgba(255,111,145,0.35);
+  box-shadow:
+    0 0 20px rgba(255,111,145,0.18),
+    inset 0 0 20px rgba(255,111,145,0.05);
+}
+
+.glow-purple{
+  border-color: rgba(155,109,255,0.35);
+  box-shadow:
+    0 0 20px rgba(155,109,255,0.18),
+    inset 0 0 20px rgba(155,109,255,0.05);
+}
+
+.glow-blue{
+  border-color: rgba(91,140,255,0.35);
+  box-shadow:
+    0 0 20px rgba(91,140,255,0.18),
+    inset 0 0 20px rgba(91,140,255,0.05);
+}
+
+.glow-orange{
+  border-color: rgba(255,180,94,0.35);
+  box-shadow:
+    0 0 20px rgba(255,180,94,0.18),
+    inset 0 0 20px rgba(255,180,94,0.05);
+}
+
+.glow-pink{
+  border-color: rgba(255,99,195,0.35);
+  box-shadow:
+    0 0 20px rgba(255,99,195,0.18),
+    inset 0 0 20px rgba(255,99,195,0.05);
+}
