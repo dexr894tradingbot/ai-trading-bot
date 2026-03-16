@@ -51,6 +51,9 @@ COOLDOWN_MIN_AFTER_LOSS = 5
 BE_AFTER_TP1 = True
 TRAIL_AFTER_TP1 = True
 
+TRADE_A_SIZE = 0.70
+TRADE_B_SIZE = 0.30
+
 MAX_HISTORY = 500
 PERFORMANCE_REVIEW_N = 30
 LIVE_CACHE_TTL_SEC = 2
@@ -375,10 +378,10 @@ async def maybe_send_telegram(key: str, min_gap_sec: int, text: str) -> bool:
 
 def build_signal_message(symbol: str, timeframe: str, signal: Dict[str, Any]) -> str:
     direction = signal.get("direction", "-")
-    entry = signal.get("entry", "-")
-    sl = signal.get("sl", "-")
-    tp1 = signal.get("tp1", "-")
-    tp2 = signal.get("tp2", signal.get("tp", "-"))
+    entry = fmt_price(signal.get("entry"))
+    sl = fmt_price(signal.get("sl"))
+    tp1 = fmt_price(signal.get("tp1"))
+    tp2 = fmt_price(signal.get("tp2", signal.get("tp")))
     confidence = signal.get("confidence", 0)
     quality_grade = signal.get("quality_grade", "-")
     quality_stars = signal.get("quality_stars", "")
@@ -389,10 +392,15 @@ def build_signal_message(symbol: str, timeframe: str, signal: Dict[str, Any]) ->
         f"{title} — {symbol} ({timeframe})\n\n"
         f"Quality: {quality_grade} {quality_stars}\n"
         f"Confidence: {confidence}%\n\n"
-        f"Entry: {entry}\n"
-        f"Stop Loss: {sl}\n"
-        f"TP1: {tp1}\n"
-        f"TP2: {tp2}\n\n"
+        f"Main Entry: {entry}\n"
+        f"Stop Loss: {sl}\n\n"
+        f"Execution Plan:\n"
+        f"Trade A: {int(TRADE_A_SIZE * 100)}% size → TP1: {tp1}\n"
+        f"Trade B: {int(TRADE_B_SIZE * 100)}% size → TP2: {tp2}\n\n"
+        f"Management:\n"
+        f"• When TP1 hits, close Trade A\n"
+        f"• Move Trade B stop loss to breakeven\n"
+        f"• Let Trade B run to TP2\n\n"
         f"Trade only after confirmation."
     )
 
@@ -434,11 +442,12 @@ def build_invalidated_message(symbol: str, timeframe: str, briefing: Dict[str, A
 
 def build_tp1_message(symbol: str, timeframe: str, trade: Dict[str, Any]) -> str:
     return (
-        f"🎯 TP1 HIT — {symbol} ({timeframe})\n\n"
+        f"✅ TP1 WIN — {symbol} ({timeframe})\n\n"
         f"Direction: {trade.get('direction', '-')}\n"
         f"Entry: {trade.get('entry', '-')}\n"
         f"TP1: {trade.get('tp1', '-')}\n\n"
-        f"Trade protected.\n"
+        f"Trade A closed in profit.\n"
+        f"Trade B remains open.\n"
         f"Stop moved to breakeven."
     )
 
@@ -451,18 +460,31 @@ def build_closed_message(
     price: float,
 ) -> str:
     if outcome == "TP2":
-        emoji = "🏆"
-        result = "Target reached"
-    else:
-        emoji = "🛑"
-        result = "Stop loss hit"
+        return (
+            f"🏆 TP2 WIN — {symbol} ({timeframe})\n\n"
+            f"Direction: {trade.get('direction', '-')}\n"
+            f"Entry: {trade.get('entry', '-')}\n"
+            f"Exit: {round(price, 5)}\n\n"
+            f"Trade B reached TP2.\n"
+            f"Full execution completed successfully."
+        )
+
+    if outcome == "BE":
+        return (
+            f"⚖️ RUNNER CLOSED AT BREAKEVEN — {symbol} ({timeframe})\n\n"
+            f"Direction: {trade.get('direction', '-')}\n"
+            f"Entry: {trade.get('entry', '-')}\n"
+            f"Exit: {round(price, 5)}\n\n"
+            f"TP1 was already secured.\n"
+            f"Trade B closed at breakeven."
+        )
 
     return (
-        f"{emoji} TRADE CLOSED — {symbol} ({timeframe})\n\n"
+        f"🛑 STOP LOSS HIT — {symbol} ({timeframe})\n\n"
         f"Direction: {trade.get('direction', '-')}\n"
         f"Entry: {trade.get('entry', '-')}\n"
         f"Exit: {round(price, 5)}\n\n"
-        f"Result: {result}"
+        f"Trade closed in loss."
     )
 
 
@@ -472,15 +494,18 @@ def _performance(last_n: int) -> Dict[str, Any]:
     window = closed[-last_n:]
 
     total = len(window)
-    wins = sum(1 for t in window if t.get("outcome") == "TP2")
+    wins = sum(1 for t in window if t.get("outcome") in ("TP2", "BE"))
     losses = sum(1 for t in window if t.get("outcome") == "SL")
     win_rate = (wins / total * 100.0) if total else 0.0
 
     r_vals: List[float] = []
     for t in window:
-        if t.get("outcome") == "TP2":
+        outcome = t.get("outcome")
+        if outcome == "TP2":
             r_vals.append(float(t.get("r_multiple") or 0.0))
-        elif t.get("outcome") == "SL":
+        elif outcome == "BE":
+            r_vals.append(float(TRADE_A_SIZE))
+        elif outcome == "SL":
             r_vals.append(-1.0)
 
     avg_r = (sum(r_vals) / len(r_vals)) if r_vals else 0.0
@@ -495,8 +520,6 @@ def _performance(last_n: int) -> Dict[str, Any]:
         "avg_R": round(avg_r, 3),
         "total_R": round(total_r, 3),
     }
-
-
 # =========================================================
 # INDICATORS
 # =========================================================
@@ -596,6 +619,8 @@ def get_trend_memory(candles: List[Dict[str, float]]) -> Dict[str, Any]:
         "ema20": ema20_now,
         "ema50": ema50_now,
     }
+
+
 # =========================================================
 # SWINGS / STRUCTURE / ZONES
 # =========================================================
@@ -786,8 +811,6 @@ def liquidity_pools(candles: List[Dict[str, float]], atr_value: float) -> Dict[s
         "nearest_high_pool": nearest_high_pool,
         "nearest_low_pool": nearest_low_pool,
     }
-
-
 # =========================================================
 # MARKET INTELLIGENCE
 # =========================================================
@@ -983,6 +1006,8 @@ def build_market_context(
         "trend_fine": trend_fine,
         "atr_value": atr_value,
     }
+
+
 # =========================================================
 # TRADE SETUP DETECTION
 # =========================================================
@@ -1259,8 +1284,6 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
             "reversal_risk": context["reversal_risk"],
         },
     }
-
-
 # =========================================================
 # TRADE MANAGEMENT
 # =========================================================
@@ -1311,13 +1334,15 @@ async def close_trade(symbol: str, timeframe: str, trade: Dict[str, Any], outcom
         RISK_STATE["cooldown_until"][symbol] = _now_ts() + COOLDOWN_MIN_AFTER_LOSS * 60
     elif outcome == "TP2":
         RISK_STATE["daily_R"] += float(trade.get("r_multiple") or 1.0)
+    elif outcome == "BE":
+        RISK_STATE["daily_R"] += float(TRADE_A_SIZE)
 
     idx = _find_history_index(trade["trade_id"])
     if idx is not None:
         TRADE_HISTORY[idx] = {**TRADE_HISTORY[idx], **trade}
 
     await maybe_send_telegram(
-        key=f"closed:{symbol}:{timeframe}",
+        key=f"closed:{symbol}:{timeframe}:{trade['trade_id']}:{outcome}",
         min_gap_sec=5,
         text=build_closed_message(symbol, timeframe, trade, outcome, price),
     )
@@ -1356,10 +1381,11 @@ async def manage_active_trade(
 
     if direction == "BUY":
         if last_low <= sl:
-            closed = await close_trade(symbol, timeframe, trade, "SL", sl)
+            outcome = "BE" if trade.get("tp1_hit") and abs(sl - entry) < 1e-9 else "SL"
+            closed = await close_trade(symbol, timeframe, trade, outcome, sl)
             return {
                 "closed_trade": closed,
-                "signal": {"direction": "HOLD", "confidence": 0, "reason": "trade_closed_sl"},
+                "signal": {"direction": "HOLD", "confidence": 0, "reason": f"trade_closed_{outcome.lower()}"},
                 "active": False,
                 "actions": actions,
             }
@@ -1384,12 +1410,14 @@ async def manage_active_trade(
                 "active": False,
                 "actions": actions,
             }
+
     else:
         if last_high >= sl:
-            closed = await close_trade(symbol, timeframe, trade, "SL", sl)
+            outcome = "BE" if trade.get("tp1_hit") and abs(sl - entry) < 1e-9 else "SL"
+            closed = await close_trade(symbol, timeframe, trade, outcome, sl)
             return {
                 "closed_trade": closed,
-                "signal": {"direction": "HOLD", "confidence": 0, "reason": "trade_closed_sl"},
+                "signal": {"direction": "HOLD", "confidence": 0, "reason": f"trade_closed_{outcome.lower()}"},
                 "active": False,
                 "actions": actions,
             }
@@ -1435,6 +1463,8 @@ async def manage_active_trade(
             break
 
     return {"signal": trade, "active": True, "actions": actions}
+
+
 # =========================================================
 # TELEGRAM SMART MARKET STATE
 # =========================================================
@@ -1599,7 +1629,7 @@ async def analyze_market(
 
     if hold_reason:
         signal = {"direction": "HOLD", "confidence": 0, "reason": hold_reason}
-    if signal.get("direction") in ("BUY", "SELL"):
+    elif signal.get("direction") in ("BUY", "SELL"):
         if int(signal.get("confidence", 0)) < MIN_CONFIDENCE_TO_OPEN:
             signal = {
                 "direction": "HOLD",
@@ -1623,7 +1653,6 @@ async def analyze_market(
     if manage_trade and signal.get("direction") in ("BUY", "SELL"):
         opened = await open_new_trade(symbol, timeframe, signal)
         return {
-    
             "symbol": symbol,
             "timeframe": timeframe,
             "price": round(price, 5),
@@ -1783,6 +1812,8 @@ async def history(symbol: Optional[str] = None, limit: int = 50) -> Dict[str, An
 @router.get("/performance")
 async def performance(last_n: int = PERFORMANCE_REVIEW_N) -> Dict[str, Any]:
     return _performance(last_n)
+
+
 @router.get("/state")
 async def state(limit: int = 100) -> Dict[str, Any]:
     limit = max(1, min(int(limit), 500))
@@ -1799,6 +1830,7 @@ async def state(limit: int = 100) -> Dict[str, Any]:
         "max_active_total": MAX_ACTIVE_TOTAL,
         "server_time": _now_ts(),
     }
+
 
 @router.websocket("/ws")
 async def websocket_live(ws: WebSocket):
@@ -1865,4 +1897,4 @@ async def websocket_live(ws: WebSocket):
         try:
             await ws.close()
         except Exception:
-            pass
+            pass    
