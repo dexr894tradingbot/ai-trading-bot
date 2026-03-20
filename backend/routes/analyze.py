@@ -6,7 +6,7 @@ import uuid
 import json
 import asyncio
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -22,6 +22,9 @@ router = APIRouter()
 ENTRY_TF = "5m"
 BIAS_TF_1 = "15m"
 BIAS_TF_2 = "1h"
+DAILY_TF = "1d"
+WEEKLY_TF = "1w"
+MONTHLY_TF = "1M"
 FINE_TUNE_TF = "1m"
 
 EMA_FAST = 20
@@ -39,12 +42,13 @@ MIN_RR = 1.80
 MIN_EXPANSION_ATR = 1.00
 MIN_DISPLACEMENT_BODY_ATR = 0.38
 MIN_TREND_STRENGTH = 0.08
-MIN_CONFIDENCE_TO_OPEN = 58
+MIN_CONFIDENCE_TO_OPEN = 56
 
 MIN_SIGNAL_GAP_SEC = 45
 MIN_HOLD_SECONDS_AFTER_OPEN = 30
 
 MAX_ACTIVE_TOTAL = 3
+MAX_ACTIVE_PER_SYMBOL = 1
 COOLDOWN_MIN_AFTER_LOSS = 5
 
 BE_AFTER_TP1 = True
@@ -72,24 +76,44 @@ TELEGRAM_MIN_INVALIDATED_GAP_SEC = 300
 
 PROGRESS_ALERT_STEPS = [25, 50, 75, 90]
 
-ALLOWED_TFS = {"1m", "5m", "15m", "30m", "1h", "2h", "4h"}
+ALLOWED_TFS = {
+    "1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"
+}
 
 # =========================================================
-# HYBRID STRATEGY TUNING
+# SNIPER STRATEGY TUNING
 # =========================================================
 PULLBACK_LOOKBACK = 6
 CONFIRMATION_LOOKBACK = 3
 RETEST_LOOKBACK = 5
 
 NO_TRADE_AFTER_IMPULSE_ATR = 0.90
-NO_TRADE_IF_TOO_FAR_FROM_EMA = 0.85
-EMA_PULLBACK_TOLERANCE_ATR = 0.35
+NO_TRADE_IF_TOO_FAR_FROM_EMA = 1.10
+EMA_PULLBACK_TOLERANCE_ATR = 0.45
 
-BREAKOUT_BODY_ATR = 0.45
+BREAKOUT_BODY_ATR = 0.35
 MIN_CONFIRMATION_BODY_RATIO = 0.35
 
 MIN_ZONE_DISTANCE_ATR = 0.10
 MAX_ZONE_DISTANCE_ATR = 1.35
+
+EXHAUSTION_WICK_BODY_RATIO = 1.15
+REVERSAL_BLOCK_BARS = 2
+CHOP_LOOKBACK = 8
+CHOP_MAX_DIRECTIONAL_BODY_RATIO = 0.52
+
+# =========================================================
+# TIMEFRAME FETCH CANDIDATES
+# =========================================================
+HTF_CANDIDATES: Dict[str, List[str]] = {
+    "monthly": ["1M", "30d", "4h"],
+    "weekly": ["1w", "7d", "1d"],
+    "daily": ["1d", "4h"],
+    "h1": ["1h"],
+    "m15": ["15m"],
+    "m5": ["5m"],
+    "m1": ["1m"],
+}
 
 # =========================================================
 # STATE
@@ -146,6 +170,10 @@ def _trade_key(symbol: str, tf: str) -> str:
 
 def _active_total() -> int:
     return len(ACTIVE_TRADES)
+
+
+def _active_symbol_count(symbol: str) -> int:
+    return sum(1 for t in ACTIVE_TRADES.values() if t.get("symbol") == symbol)
 
 
 def _push_history(item: Dict[str, Any]) -> None:
@@ -205,6 +233,22 @@ async def _cached_fetch_candles(
     )
     LIVE_CACHE[key] = {"ts": now, "candles": candles or []}
     return candles or []
+
+
+async def _fetch_first_supported_timeframe(
+    app_id: str,
+    symbol: str,
+    tf_candidates: List[str],
+    count: int,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    for tf in tf_candidates:
+        try:
+            candles = await _cached_fetch_candles(app_id, symbol, tf, count)
+            if candles:
+                return candles, tf
+        except Exception:
+            continue
+    return [], None
 
 
 def fmt_price(x: Optional[float]) -> str:
@@ -282,8 +326,6 @@ def build_live_trade_tracker(trade: Dict[str, Any], current_price: float) -> Dic
         "quality_grade": trade.get("quality_grade"),
         "quality_stars": trade.get("quality_stars"),
     }
-
-
 def build_daily_market_outlook(ranked_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     actionable = [r for r in ranked_rows if r.get("direction") in ("BUY", "SELL")]
     best = actionable[0] if actionable else (ranked_rows[0] if ranked_rows else None)
@@ -300,9 +342,9 @@ def build_daily_market_outlook(ranked_rows: List[Dict[str, Any]]) -> Dict[str, A
             "note": "Wait for better structure and cleaner confirmation.",
         }
 
-    note = "Focus on pullback + confirmation only."
+    note = "Focus on zone touch + confirmation only."
     if best.get("market_state") == "TRENDING CLEAN":
-        note = "Best conditions are in a clean trend with structured pullback."
+        note = "Best conditions are in a clean directional structure."
     elif best.get("reversal_risk") == "HIGH":
         note = "High reversal risk. Stay selective."
 
@@ -357,6 +399,8 @@ def quality_grade_from_signal(
         score += 4
     if "rejection" in setup_reason:
         score += 4
+    if "sniper" in setup_reason:
+        score += 2
 
     if bias == "NEUTRAL":
         score -= 10
@@ -427,7 +471,7 @@ def build_signal_message(symbol: str, timeframe: str, signal: Dict[str, Any]) ->
         f"Trade A: {int(TRADE_A_SIZE * 100)}% size → TP1: {tp1}\n"
         f"Trade B: {int(TRADE_B_SIZE * 100)}% size → TP2: {tp2}\n\n"
         f"Management:\n"
-        f"• Only enter after confirmation\n"
+        f"• Only enter after zone touch + confirmation\n"
         f"• When TP1 hits, close Trade A\n"
         f"• Move Trade B stop loss to breakeven\n"
         f"• Let Trade B run to TP2\n"
@@ -438,6 +482,9 @@ def build_briefing_message(symbol: str, timeframe: str, briefing: Dict[str, Any]
     return (
         f"📊 MARKET UPDATE — {symbol} ({timeframe})\n\n"
         f"Bias: {briefing.get('bias', '-')}\n"
+        f"Monthly Bias: {briefing.get('monthly_bias', '-')}\n"
+        f"Weekly Bias: {briefing.get('weekly_bias', '-')}\n"
+        f"Daily Bias: {briefing.get('daily_bias', '-')}\n"
         f"Market State: {briefing.get('market_state', '-')}\n"
         f"Trend Strength: {briefing.get('trend_strength', '-')}\n\n"
         f"Support Zone: {briefing.get('buyer_zone', '-')}\n"
@@ -549,6 +596,8 @@ def _performance(last_n: int) -> Dict[str, Any]:
         "avg_R": round(avg_r, 3),
         "total_R": round(total_r, 3),
     }
+
+
 # =========================================================
 # INDICATORS
 # =========================================================
@@ -611,8 +660,6 @@ def lower_wick(c: Dict[str, float]) -> float:
     cl = safe_float(c["close"])
     l = safe_float(c["low"])
     return min(o, cl) - l
-
-
 def candle_closes_near_high(c: Dict[str, float], threshold: float = 0.70) -> bool:
     rng = max(1e-9, candle_range(c))
     pos = (safe_float(c["close"]) - safe_float(c["low"])) / rng
@@ -682,6 +729,16 @@ def strong_rejection(candle: Dict[str, float], direction: str) -> bool:
     return False
 
 
+def opposite_rejection_block(candle: Dict[str, float], intended_direction: str) -> bool:
+    body = max(1e-9, candle_body(candle))
+    uw = upper_wick(candle)
+    lw = lower_wick(candle)
+
+    if intended_direction == "BUY":
+        return is_bearish(candle) and uw >= body * EXHAUSTION_WICK_BODY_RATIO
+    return is_bullish(candle) and lw >= body * EXHAUSTION_WICK_BODY_RATIO
+
+
 def is_impulse_candle(candle: Dict[str, float], atr_value: float) -> bool:
     if atr_value <= 0:
         return False
@@ -709,6 +766,60 @@ def valid_pullback(direction: str, candles: List[Dict[str, float]], ema20: float
     return False
 
 
+def recent_exhaustion_against_trade(
+    direction: str,
+    candles: List[Dict[str, float]],
+    atr_value: float,
+) -> bool:
+    if len(candles) < 1 or atr_value <= 0:
+        return False
+
+    recent = candles[-REVERSAL_BLOCK_BARS:] if len(candles) >= REVERSAL_BLOCK_BARS else candles
+
+    for c in recent:
+        if direction == "BUY":
+            if opposite_rejection_block(c, "BUY"):
+                return True
+            if is_bearish(c) and candle_body(c) >= atr_value * 0.80 and candle_closes_near_low(c, 0.35):
+                return True
+        else:
+            if opposite_rejection_block(c, "SELL"):
+                return True
+            if is_bullish(c) and candle_body(c) >= atr_value * 0.80 and candle_closes_near_high(c, 0.65):
+                return True
+
+    return False
+
+
+def market_is_too_choppy(candles: List[Dict[str, float]], atr_value: float) -> bool:
+    if len(candles) < CHOP_LOOKBACK or atr_value <= 0:
+        return False
+
+    recent = candles[-CHOP_LOOKBACK:]
+    directional_body_sum = 0.0
+    total_range_sum = 0.0
+    alternating = 0
+
+    for i, c in enumerate(recent):
+        directional_body_sum += candle_body(c)
+        total_range_sum += candle_range(c)
+        if i > 0:
+            prev = recent[i - 1]
+            if is_bullish(prev) != is_bullish(c):
+                alternating += 1
+
+    avg_body_ratio = directional_body_sum / max(1e-9, total_range_sum)
+    avg_range = total_range_sum / len(recent)
+
+    if avg_body_ratio < CHOP_MAX_DIRECTIONAL_BODY_RATIO and alternating >= len(recent) // 2:
+        return True
+
+    if avg_range < atr_value * 0.85 and alternating >= len(recent) // 2:
+        return True
+
+    return False
+
+
 def breakout_retest_detected(
     direction: str,
     candles: List[Dict[str, float]],
@@ -728,7 +839,7 @@ def breakout_retest_detected(
             and candle_body(breakout) >= atr_value * BREAKOUT_BODY_ATR
             and safe_float(breakout["close"]) > level + atr_value * 0.10
         )
-        retest = safe_float(last["low"]) <= level + atr_value * 0.15
+        retest = safe_float(last["low"]) <= level + atr_value * 0.18
         confirm = candle_closes_strong_bullish(last) or bullish_engulfing(breakout, last)
         return broke and retest and confirm
 
@@ -737,7 +848,7 @@ def breakout_retest_detected(
         and candle_body(breakout) >= atr_value * BREAKOUT_BODY_ATR
         and safe_float(breakout["close"]) < level - atr_value * 0.10
     )
-    retest = safe_float(last["high"]) >= level - atr_value * 0.15
+    retest = safe_float(last["high"]) >= level - atr_value * 0.18
     confirm = candle_closes_strong_bearish(last) or bearish_engulfing(breakout, last)
     return broke and retest and confirm
 
@@ -797,6 +908,9 @@ def trend_alignment_score(
     entry_trend: str,
     tf15_trend: str,
     tf1h_trend: str,
+    daily_trend: str,
+    weekly_trend: str,
+    monthly_trend: str,
     desired: str,
 ) -> int:
     score = 0
@@ -806,6 +920,12 @@ def trend_alignment_score(
         score += 1
     if tf1h_trend == desired:
         score += 1
+    if daily_trend == desired:
+        score += 2
+    if weekly_trend == desired:
+        score += 2
+    if monthly_trend == desired:
+        score += 2
     return score
 
 
@@ -1204,21 +1324,42 @@ def pick_best_trade_zone(
 # =========================================================
 # MARKET INTELLIGENCE
 # =========================================================
-def combine_bias(entry_bias: str, bias_15m: str, bias_1h: str) -> str:
-    votes = [entry_bias, bias_15m, bias_1h]
-    up = sum(1 for x in votes if x == "UP")
-    down = sum(1 for x in votes if x == "DOWN")
+def combine_bias(
+    entry_bias: str,
+    bias_15m: str,
+    bias_1h: str,
+    daily_bias: str,
+    weekly_bias: str,
+    monthly_bias: str,
+) -> str:
+    up = 0
+    down = 0
 
-    if up >= 2:
+    for x in [entry_bias, bias_15m, bias_1h]:
+        if x == "UP":
+            up += 1
+        elif x == "DOWN":
+            down += 1
+
+    if daily_bias == "UP":
+        up += 2
+    elif daily_bias == "DOWN":
+        down += 2
+
+    if weekly_bias == "UP":
+        up += 2
+    elif weekly_bias == "DOWN":
+        down += 2
+
+    if monthly_bias == "UP":
+        up += 2
+    elif monthly_bias == "DOWN":
+        down += 2
+
+    if up > down and up >= 4:
         return "UP"
-    if down >= 2:
+    if down > up and down >= 4:
         return "DOWN"
-
-    if entry_bias == bias_15m and entry_bias in ("UP", "DOWN"):
-        return entry_bias
-
-    if entry_bias in ("UP", "DOWN"):
-        return entry_bias
 
     return "NEUTRAL"
 
@@ -1234,9 +1375,9 @@ def classify_market_state(
         return "CHOPPY / NO-TRADE"
     if reversal_risk == "HIGH":
         return "REVERSAL RISK"
-    if alignment_score >= 3 and trend_strength >= 0.18 and fine_tune_trend == combined_bias:
+    if alignment_score >= 7 and trend_strength >= 0.18 and fine_tune_trend == combined_bias:
         return "TRENDING CLEAN"
-    if alignment_score >= 2 and trend_strength >= 0.08:
+    if alignment_score >= 4 and trend_strength >= 0.08:
         return "TRENDING PULLBACK"
     return "WEAK TREND"
 
@@ -1245,6 +1386,10 @@ def detect_reversal_risk(
     combined_bias: str,
     trend_entry: Dict[str, Any],
     trend_15m: Dict[str, Any],
+    trend_1h: Dict[str, Any],
+    trend_daily: Dict[str, Any],
+    trend_weekly: Dict[str, Any],
+    trend_monthly: Dict[str, Any],
     structure: Dict[str, Any],
     fine_tune_trend: str,
     nearest_support: Optional[Dict[str, Any]],
@@ -1267,8 +1412,15 @@ def detect_reversal_risk(
     if combined_bias == "DOWN" and fine_tune_trend == "UP":
         risk_points += 1
 
-    if trend_15m.get("trend") not in ("SIDEWAYS", combined_bias):
-        risk_points += 1
+    for trend_blob, weight in [
+        (trend_15m, 1),
+        (trend_1h, 1),
+        (trend_daily, 2),
+        (trend_weekly, 2),
+        (trend_monthly, 2),
+    ]:
+        if trend_blob.get("trend") not in ("SIDEWAYS", combined_bias):
+            risk_points += weight
 
     if atr_value > 0:
         if combined_bias == "UP" and nearest_resistance:
@@ -1280,9 +1432,9 @@ def detect_reversal_risk(
             if dist < atr_value * 0.7:
                 risk_points += 1
 
-    if risk_points >= 4:
+    if risk_points >= 7:
         return "HIGH"
-    if risk_points >= 2:
+    if risk_points >= 4:
         return "MEDIUM"
     return "LOW"
 
@@ -1333,7 +1485,6 @@ def select_targets(
 
         targets = sorted(set(round(x, 5) for x in targets))
         eligible = [x for x in targets if (x - entry) >= min_distance]
-
         if not eligible:
             return {"tp1": None, "tp2": None}
 
@@ -1341,7 +1492,6 @@ def select_targets(
         tp1 = entry + min_distance
         if tp1 >= tp2:
             tp1 = entry + (tp2 - entry) * 0.55
-
         return {"tp1": tp1, "tp2": tp2}
 
     for z in zones.get("supports", []):
@@ -1355,7 +1505,6 @@ def select_targets(
 
     targets = sorted(set(round(x, 5) for x in targets), reverse=True)
     eligible = [x for x in targets if (entry - x) >= min_distance]
-
     if not eligible:
         return {"tp1": None, "tp2": None}
 
@@ -1363,7 +1512,6 @@ def select_targets(
     tp1 = entry - min_distance
     if tp1 <= tp2:
         tp1 = entry - (entry - tp2) * 0.55
-
     return {"tp1": tp1, "tp2": tp2}
 
 
@@ -1371,12 +1519,18 @@ def build_market_context(
     entry_data: List[Dict[str, float]],
     tf15_data: List[Dict[str, float]],
     tf1h_data: List[Dict[str, float]],
+    daily_data: List[Dict[str, float]],
+    weekly_data: List[Dict[str, float]],
+    monthly_data: List[Dict[str, float]],
     fine_data: List[Dict[str, float]],
 ) -> Dict[str, Any]:
     atr_value = float(atr_last(entry_data, ATR_PERIOD) or 0.0)
     trend_entry = get_trend_memory(entry_data)
     trend_15m = get_trend_memory(tf15_data)
     trend_1h = get_trend_memory(tf1h_data)
+    trend_daily = get_trend_memory(daily_data) if daily_data else {"trend": "SIDEWAYS"}
+    trend_weekly = get_trend_memory(weekly_data) if weekly_data else {"trend": "SIDEWAYS"}
+    trend_monthly = get_trend_memory(monthly_data) if monthly_data else {"trend": "SIDEWAYS"}
     trend_fine = get_trend_memory(fine_data) if fine_data else {"trend": "SIDEWAYS"}
 
     structure = get_structure_state(entry_data, atr_value)
@@ -1384,6 +1538,9 @@ def build_market_context(
         structure.get("bias", "NEUTRAL"),
         trend_15m.get("trend", "NEUTRAL"),
         trend_1h.get("trend", "NEUTRAL"),
+        trend_daily.get("trend", "NEUTRAL"),
+        trend_weekly.get("trend", "NEUTRAL"),
+        trend_monthly.get("trend", "NEUTRAL"),
     )
 
     zones = reaction_zones(entry_data, atr_value)
@@ -1408,6 +1565,9 @@ def build_market_context(
         trend_entry.get("trend", "SIDEWAYS"),
         trend_15m.get("trend", "SIDEWAYS"),
         trend_1h.get("trend", "SIDEWAYS"),
+        trend_daily.get("trend", "SIDEWAYS"),
+        trend_weekly.get("trend", "SIDEWAYS"),
+        trend_monthly.get("trend", "SIDEWAYS"),
         combined_bias if combined_bias in ("UP", "DOWN") else "SIDEWAYS",
     )
 
@@ -1415,6 +1575,10 @@ def build_market_context(
         combined_bias=combined_bias,
         trend_entry=trend_entry,
         trend_15m=trend_15m,
+        trend_1h=trend_1h,
+        trend_daily=trend_daily,
+        trend_weekly=trend_weekly,
+        trend_monthly=trend_monthly,
         structure=structure,
         fine_tune_trend=trend_fine.get("trend", "SIDEWAYS"),
         nearest_support=nearest_support,
@@ -1424,18 +1588,18 @@ def build_market_context(
     )
 
     if combined_bias == "UP":
-        aoi = best_buy_zone or ema_pullback_buy or nearest_support or nearest_low_pool
-        preferred_setup = "Wait for bullish pullback into support / EMA zone, then confirm"
-        confirmation_needed = "Touch pullback zone and print bullish confirmation candle"
+        aoi = best_buy_zone or nearest_support or nearest_low_pool or ema_pullback_buy
+        preferred_setup = "Wait for bullish reaction at support / demand zone, then confirm on M5"
+        confirmation_needed = "Zone touch + bullish rejection/engulfing OR breakout-retest continuation"
         invalidation = (
             f"5m closes below {fmt_price(aoi['low'])}"
             if aoi and aoi.get("low") is not None
             else "Break of bullish structure"
         )
     elif combined_bias == "DOWN":
-        aoi = best_sell_zone or ema_pullback_sell or nearest_resistance or nearest_high_pool
-        preferred_setup = "Wait for bearish pullback into resistance / EMA zone, then confirm"
-        confirmation_needed = "Touch pullback zone and print bearish confirmation candle"
+        aoi = best_sell_zone or nearest_resistance or nearest_high_pool or ema_pullback_sell
+        preferred_setup = "Wait for bearish reaction at resistance / supply zone, then confirm on M5"
+        confirmation_needed = "Zone touch + bearish rejection/engulfing OR breakout-retest continuation"
         invalidation = (
             f"5m closes above {fmt_price(aoi['high'])}"
             if aoi and aoi.get("high") is not None
@@ -1444,7 +1608,7 @@ def build_market_context(
     else:
         aoi = None
         preferred_setup = "No clean directional edge"
-        confirmation_needed = "Wait for structure and trend alignment"
+        confirmation_needed = "Wait for structure and higher-timeframe alignment"
         invalidation = "N/A"
 
     market_state = classify_market_state(
@@ -1457,6 +1621,9 @@ def build_market_context(
 
     return {
         "bias": combined_bias,
+        "monthly_bias": trend_monthly.get("trend", "SIDEWAYS"),
+        "weekly_bias": trend_weekly.get("trend", "SIDEWAYS"),
+        "daily_bias": trend_daily.get("trend", "SIDEWAYS"),
         "structure": structure.get("bias", "NEUTRAL"),
         "previous_trend": trend_entry.get("prev_trend", "SIDEWAYS"),
         "trend_strength": trend_entry.get("trend_strength", 0.0),
@@ -1481,6 +1648,9 @@ def build_market_context(
         "trend_entry": trend_entry,
         "trend_15m": trend_15m,
         "trend_1h": trend_1h,
+        "trend_daily": trend_daily,
+        "trend_weekly": trend_weekly,
+        "trend_monthly": trend_monthly,
         "trend_fine": trend_fine,
         "atr_value": atr_value,
         "best_buy_zone": best_buy_zone,
@@ -1493,12 +1663,7 @@ def build_market_context(
 # =========================================================
 # TRADE SETUP DETECTION
 # =========================================================
-def enough_room_to_run(
-    direction: str,
-    entry: float,
-    tp2: float,
-    atr_value: float,
-) -> bool:
+def enough_room_to_run(direction: str, entry: float, tp2: float, atr_value: float) -> bool:
     projected = abs(tp2 - entry)
     return projected >= atr_value * MIN_EXPANSION_ATR
 
@@ -1513,6 +1678,9 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
     trend_info = context["trend_entry"]
     trend_15m = context["trend_15m"]
     trend_1h = context["trend_1h"]
+    trend_daily = context["trend_daily"]
+    trend_weekly = context["trend_weekly"]
+    trend_monthly = context["trend_monthly"]
     zones = context["zones"]
     pools = context["pools"]
     market_state = context.get("market_state", "")
@@ -1520,15 +1688,14 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
 
     if combined_bias == "NEUTRAL" or atr_value <= 0:
         return {"direction": "HOLD", "reason": "neutral_bias"}
-
     if market_state == "CHOPPY / NO-TRADE":
         return {"direction": "HOLD", "reason": "market_state_blocked"}
-
     if context.get("reversal_risk") == "HIGH":
         return {"direction": "HOLD", "reason": "reversal_risk_high"}
-
     if trend_strength < MIN_TREND_STRENGTH:
         return {"direction": "HOLD", "reason": "trend_strength_too_low"}
+    if market_is_too_choppy(entry_data, atr_value):
+        return {"direction": "HOLD", "reason": "market_too_choppy"}
 
     last = entry_data[-1]
     prev = entry_data[-2]
@@ -1546,23 +1713,26 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
             trend_info.get("trend", "SIDEWAYS"),
             trend_15m.get("trend", "SIDEWAYS"),
             trend_1h.get("trend", "SIDEWAYS"),
+            trend_daily.get("trend", "SIDEWAYS"),
+            trend_weekly.get("trend", "SIDEWAYS"),
+            trend_monthly.get("trend", "SIDEWAYS"),
             "UP",
-        ) < 2:
+        ) < 5:
             return {"direction": "HOLD", "reason": "buy_alignment_too_weak"}
 
         zone = context.get("best_buy_zone") or context.get("ema_pullback_buy_zone")
         if not zone:
             return {"direction": "HOLD", "reason": "no_buy_aoi"}
-
         if ema20 <= ema50:
             return {"direction": "HOLD", "reason": "trend_not_up"}
-
+        if trend_daily.get("trend") == "DOWN" or trend_weekly.get("trend") == "DOWN" or trend_monthly.get("trend") == "DOWN":
+            return {"direction": "HOLD", "reason": "htf_bias_conflict_buy"}
         if is_impulse_candle(last, atr_value):
             return {"direction": "HOLD", "reason": "buy_impulse_chase_blocked"}
-
+        if recent_exhaustion_against_trade("BUY", entry_data, atr_value):
+            return {"direction": "HOLD", "reason": "buy_exhaustion_block"}
         if too_far_from_ema(last_close, ema20, atr_value) and not price_touched_zone_recently("BUY", entry_data, zone, atr_value):
             return {"direction": "HOLD", "reason": "buy_extended_from_ema"}
-
         if not valid_pullback("BUY", entry_data, ema20, atr_value):
             return {"direction": "HOLD", "reason": "no_buy_pullback"}
 
@@ -1572,7 +1742,6 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
 
         if not zone_touched and not breakout_confirm:
             return {"direction": "HOLD", "reason": "buy_zone_not_tested"}
-
         if not (rejection_confirm or breakout_confirm):
             return {"direction": "HOLD", "reason": "buy_confirmation_missing"}
 
@@ -1592,7 +1761,6 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         sl = sl_anchor - atr_value * SL_BUFFER_ATR
         entry = last_close
         risk = entry - sl
-
         if risk <= 0:
             return {"direction": "HOLD", "reason": "invalid_buy_risk"}
 
@@ -1600,7 +1768,6 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         tp2 = targets.get("tp2")
         if tp2 is None:
             return {"direction": "HOLD", "reason": "no_buy_target"}
-
         if not enough_room_to_run("BUY", entry, tp2, atr_value):
             return {"direction": "HOLD", "reason": "buy_target_too_close"}
 
@@ -1608,8 +1775,7 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         if rr < MIN_RR:
             return {"direction": "HOLD", "reason": "buy_rr_too_low"}
 
-        reason = "bullish_breakout_retest_confirmed" if breakout_confirm else "bullish_rejection_retest_confirmed"
-
+        reason = "bullish_breakout_retest_confirmed_sniper" if breakout_confirm else "bullish_rejection_retest_confirmed_sniper"
         return {
             "direction": "BUY",
             "entry": entry,
@@ -1623,23 +1789,26 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         trend_info.get("trend", "SIDEWAYS"),
         trend_15m.get("trend", "SIDEWAYS"),
         trend_1h.get("trend", "SIDEWAYS"),
+        trend_daily.get("trend", "SIDEWAYS"),
+        trend_weekly.get("trend", "SIDEWAYS"),
+        trend_monthly.get("trend", "SIDEWAYS"),
         "DOWN",
-    ) < 2:
+    ) < 5:
         return {"direction": "HOLD", "reason": "sell_alignment_too_weak"}
 
     zone = context.get("best_sell_zone") or context.get("ema_pullback_sell_zone")
     if not zone:
         return {"direction": "HOLD", "reason": "no_sell_aoi"}
-
     if ema20 >= ema50:
         return {"direction": "HOLD", "reason": "trend_not_down"}
-
+    if trend_daily.get("trend") == "UP" or trend_weekly.get("trend") == "UP" or trend_monthly.get("trend") == "UP":
+        return {"direction": "HOLD", "reason": "htf_bias_conflict_sell"}
     if is_impulse_candle(last, atr_value):
         return {"direction": "HOLD", "reason": "sell_impulse_chase_blocked"}
-
+    if recent_exhaustion_against_trade("SELL", entry_data, atr_value):
+        return {"direction": "HOLD", "reason": "sell_exhaustion_block"}
     if too_far_from_ema(last_close, ema20, atr_value) and not price_touched_zone_recently("SELL", entry_data, zone, atr_value):
         return {"direction": "HOLD", "reason": "sell_extended_from_ema"}
-
     if not valid_pullback("SELL", entry_data, ema20, atr_value):
         return {"direction": "HOLD", "reason": "no_sell_pullback"}
 
@@ -1649,7 +1818,6 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
 
     if not zone_touched and not breakout_confirm:
         return {"direction": "HOLD", "reason": "sell_zone_not_tested"}
-
     if not (rejection_confirm or breakout_confirm):
         return {"direction": "HOLD", "reason": "sell_confirmation_missing"}
 
@@ -1669,7 +1837,6 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
     sl = sl_anchor + atr_value * SL_BUFFER_ATR
     entry = last_close
     risk = sl - entry
-
     if risk <= 0:
         return {"direction": "HOLD", "reason": "invalid_sell_risk"}
 
@@ -1677,7 +1844,6 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
     tp2 = targets.get("tp2")
     if tp2 is None:
         return {"direction": "HOLD", "reason": "no_sell_target"}
-
     if not enough_room_to_run("SELL", entry, tp2, atr_value):
         return {"direction": "HOLD", "reason": "sell_target_too_close"}
 
@@ -1685,8 +1851,7 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
     if rr < MIN_RR:
         return {"direction": "HOLD", "reason": "sell_rr_too_low"}
 
-    reason = "bearish_breakout_retest_confirmed" if breakout_confirm else "bearish_rejection_retest_confirmed"
-
+    reason = "bearish_breakout_retest_confirmed_sniper" if breakout_confirm else "bearish_rejection_retest_confirmed_sniper"
     return {
         "direction": "SELL",
         "entry": entry,
@@ -1718,9 +1883,9 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
     alignment_score = int(context.get("alignment_score") or 0)
     confidence = 56
 
-    if alignment_score >= 3:
+    if alignment_score >= 8:
         confidence += 8
-    elif alignment_score == 2:
+    elif alignment_score >= 5:
         confidence += 4
 
     if trend_strength >= 0.18:
@@ -1764,6 +1929,9 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
         "quality_stars": quality["quality_stars"],
         "meta": {
             "bias": context["bias"],
+            "monthly_bias": context["monthly_bias"],
+            "weekly_bias": context["weekly_bias"],
+            "daily_bias": context["daily_bias"],
             "structure": context["structure"],
             "trend_strength": context["trend_strength"],
             "area_of_interest": context["area_of_interest"],
@@ -1772,6 +1940,8 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
             "alignment_score": alignment_score,
         },
     }
+
+
 # =========================================================
 # TRADE MANAGEMENT
 # =========================================================
@@ -1862,8 +2032,7 @@ async def manage_active_trade(
     if (_now_ts() - int(trade.get("opened_at") or 0)) < MIN_HOLD_SECONDS_AFTER_OPEN:
         if tp2:
             trade["progress_pct"] = round(
-                trade_progress_percent_fn(direction, entry, sl, tp2, last_close),
-                2,
+                trade_progress_percent_fn(direction, entry, sl, tp2, last_close), 2
             )
         return {"signal": trade, "active": True, "actions": actions}
 
@@ -1871,12 +2040,7 @@ async def manage_active_trade(
         if last_low <= sl:
             outcome = "BE" if trade.get("tp1_hit") and abs(sl - entry) < 1e-9 else "SL"
             closed = await close_trade(symbol, timeframe, trade, outcome, sl)
-            return {
-                "closed_trade": closed,
-                "signal": {"direction": "HOLD", "confidence": 0, "reason": f"trade_closed_{outcome.lower()}"},
-                "active": False,
-                "actions": actions,
-            }
+            return {"closed_trade": closed, "signal": {"direction": "HOLD", "confidence": 0, "reason": f"trade_closed_{outcome.lower()}"}, "active": False, "actions": actions}
 
         if tp1 and not trade.get("tp1_hit", False) and last_high >= tp1:
             trade["tp1_hit"] = True
@@ -1892,23 +2056,13 @@ async def manage_active_trade(
 
         if last_high >= tp2:
             closed = await close_trade(symbol, timeframe, trade, "TP2", tp2)
-            return {
-                "closed_trade": closed,
-                "signal": {"direction": "HOLD", "confidence": 0, "reason": "trade_closed_tp2"},
-                "active": False,
-                "actions": actions,
-            }
+            return {"closed_trade": closed, "signal": {"direction": "HOLD", "confidence": 0, "reason": "trade_closed_tp2"}, "active": False, "actions": actions}
 
     else:
         if last_high >= sl:
             outcome = "BE" if trade.get("tp1_hit") and abs(sl - entry) < 1e-9 else "SL"
             closed = await close_trade(symbol, timeframe, trade, outcome, sl)
-            return {
-                "closed_trade": closed,
-                "signal": {"direction": "HOLD", "confidence": 0, "reason": f"trade_closed_{outcome.lower()}"},
-                "active": False,
-                "actions": actions,
-            }
+            return {"closed_trade": closed, "signal": {"direction": "HOLD", "confidence": 0, "reason": f"trade_closed_{outcome.lower()}"}, "active": False, "actions": actions}
 
         if tp1 and not trade.get("tp1_hit", False) and last_low <= tp1:
             trade["tp1_hit"] = True
@@ -1924,12 +2078,7 @@ async def manage_active_trade(
 
         if last_low <= tp2:
             closed = await close_trade(symbol, timeframe, trade, "TP2", tp2)
-            return {
-                "closed_trade": closed,
-                "signal": {"direction": "HOLD", "confidence": 0, "reason": "trade_closed_tp2"},
-                "active": False,
-                "actions": actions,
-            }
+            return {"closed_trade": closed, "signal": {"direction": "HOLD", "confidence": 0, "reason": "trade_closed_tp2"}, "active": False, "actions": actions}
 
     if TRAIL_AFTER_TP1 and trade.get("tp1_hit"):
         atr_value = float(atr_last(closed_candles(candles_tf), ATR_PERIOD) or 0.0)
@@ -1950,22 +2099,13 @@ async def manage_active_trade(
 # =========================================================
 # TELEGRAM SMART MARKET STATE
 # =========================================================
-async def maybe_emit_market_messages(
-    symbol: str,
-    timeframe: str,
-    context: Dict[str, Any],
-    signal: Dict[str, Any],
-) -> None:
+async def maybe_emit_market_messages(symbol: str, timeframe: str, context: Dict[str, Any], signal: Dict[str, Any]) -> None:
     state = "INFO"
     if signal.get("direction") in ("BUY", "SELL"):
         state = "READY"
     else:
         market_state = context.get("market_state", "")
-        if (
-            context.get("bias") in ("UP", "DOWN")
-            and context.get("area_of_interest") != "-"
-            and market_state not in ("CHOPPY / NO-TRADE",)
-        ):
+        if context.get("bias") in ("UP", "DOWN") and context.get("area_of_interest") != "-" and market_state not in ("CHOPPY / NO-TRADE",):
             state = "WATCH"
         if context.get("reversal_risk") == "HIGH":
             state = "INVALIDATED"
@@ -1979,47 +2119,33 @@ async def maybe_emit_market_messages(
     LAST_MARKET_STATE[state_key] = state
 
     if state == "WATCH":
-        await maybe_send_telegram(
-            key=f"watch:{symbol}:{timeframe}",
-            min_gap_sec=TELEGRAM_MIN_WATCH_GAP_SEC,
-            text=build_watch_message(symbol, timeframe, context),
-        )
+        await maybe_send_telegram(key=f"watch:{symbol}:{timeframe}", min_gap_sec=TELEGRAM_MIN_WATCH_GAP_SEC, text=build_watch_message(symbol, timeframe, context))
     elif state == "READY":
         return
     elif state == "INVALIDATED":
-        await maybe_send_telegram(
-            key=f"invalidated:{symbol}:{timeframe}",
-            min_gap_sec=TELEGRAM_MIN_INVALIDATED_GAP_SEC,
-            text=build_invalidated_message(symbol, timeframe, context),
-        )
+        await maybe_send_telegram(key=f"invalidated:{symbol}:{timeframe}", min_gap_sec=TELEGRAM_MIN_INVALIDATED_GAP_SEC, text=build_invalidated_message(symbol, timeframe, context))
     else:
-        await maybe_send_telegram(
-            key=f"briefing:{symbol}:{timeframe}",
-            min_gap_sec=TELEGRAM_MIN_BRIEFING_GAP_SEC,
-            text=build_briefing_message(symbol, timeframe, context),
-        )
+        await maybe_send_telegram(key=f"briefing:{symbol}:{timeframe}", min_gap_sec=TELEGRAM_MIN_BRIEFING_GAP_SEC, text=build_briefing_message(symbol, timeframe, context))
 
 
 # =========================================================
 # ANALYZE CORE + ROUTES + WS
 # =========================================================
-async def analyze_market(
-    req: AnalyzeRequest,
-    manage_trade: bool = True,
-    emit_telegram: bool = True,
-):
+async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_telegram: bool = True):
     _reset_daily_if_needed()
 
     symbol = req.symbol.strip()
     timeframe = _requested_chart_tf(req.timeframe or ENTRY_TF)
     key = _trade_key(symbol, timeframe)
-
     app_id = os.getenv("DERIV_APP_ID", "1089")
 
     candles_entry = await _cached_fetch_candles(app_id, symbol, timeframe, 320)
-    candles_15m = await _cached_fetch_candles(app_id, symbol, BIAS_TF_1, 320)
-    candles_1h = await _cached_fetch_candles(app_id, symbol, BIAS_TF_2, 320)
-    candles_1m = await _cached_fetch_candles(app_id, symbol, FINE_TUNE_TF, 220)
+    candles_15m, _ = await _fetch_first_supported_timeframe(app_id, symbol, HTF_CANDIDATES["m15"], 320)
+    candles_1h, _ = await _fetch_first_supported_timeframe(app_id, symbol, HTF_CANDIDATES["h1"], 320)
+    candles_daily, _ = await _fetch_first_supported_timeframe(app_id, symbol, HTF_CANDIDATES["daily"], 260)
+    candles_weekly, _ = await _fetch_first_supported_timeframe(app_id, symbol, HTF_CANDIDATES["weekly"], 180)
+    candles_monthly, _ = await _fetch_first_supported_timeframe(app_id, symbol, HTF_CANDIDATES["monthly"], 180)
+    candles_1m, _ = await _fetch_first_supported_timeframe(app_id, symbol, HTF_CANDIDATES["m1"], 220)
 
     if not candles_entry:
         return {
@@ -2037,17 +2163,21 @@ async def analyze_market(
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
             "max_active_total": MAX_ACTIVE_TOTAL,
+            "max_active_per_symbol": MAX_ACTIVE_PER_SYMBOL,
         }
 
     entry_data = closed_candles(candles_entry)
     tf15_data = closed_candles(candles_15m)
     tf1h_data = closed_candles(candles_1h)
+    daily_data = closed_candles(candles_daily)
+    weekly_data = closed_candles(candles_weekly)
+    monthly_data = closed_candles(candles_monthly)
     fine_data = closed_candles(candles_1m)
 
     last_live = candles_entry[-1]
     price = safe_float(last_live["close"])
 
-    context = build_market_context(entry_data, tf15_data, tf1h_data, fine_data)
+    context = build_market_context(entry_data, tf15_data, tf1h_data, daily_data, weekly_data, monthly_data, fine_data)
     zones = context["zones"]
     levels = {
         "supports": [z["level"] for z in zones.get("supports", [])[:6]],
@@ -2075,32 +2205,36 @@ async def analyze_market(
                 "daily_R": RISK_STATE["daily_R"],
                 "active_total": _active_total(),
                 "max_active_total": MAX_ACTIVE_TOTAL,
+                "max_active_per_symbol": MAX_ACTIVE_PER_SYMBOL,
             }
             if managed.get("closed_trade"):
                 result["closed_trade"] = managed["closed_trade"]
             return result
-        else:
-            active_trade = ACTIVE_TRADES[key]
-            return {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "price": round(price, 5),
-                "candles": candles_entry,
-                "levels": levels,
-                "briefing": context,
-                "signal": active_trade,
-                "live_tracker": build_live_trade_tracker(active_trade, price),
-                "daily_outlook": None,
-                "active": True,
-                "actions": [],
-                "daily_R": RISK_STATE["daily_R"],
-                "active_total": _active_total(),
-                "max_active_total": MAX_ACTIVE_TOTAL,
-            }
+
+        active_trade = ACTIVE_TRADES[key]
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "price": round(price, 5),
+            "candles": candles_entry,
+            "levels": levels,
+            "briefing": context,
+            "signal": active_trade,
+            "live_tracker": build_live_trade_tracker(active_trade, price),
+            "daily_outlook": None,
+            "active": True,
+            "actions": [],
+            "daily_R": RISK_STATE["daily_R"],
+            "active_total": _active_total(),
+            "max_active_total": MAX_ACTIVE_TOTAL,
+            "max_active_per_symbol": MAX_ACTIVE_PER_SYMBOL,
+        }
 
     hold_reason = ""
     if _active_total() >= MAX_ACTIVE_TOTAL:
         hold_reason = "max_active_trades"
+    elif _active_symbol_count(symbol) >= MAX_ACTIVE_PER_SYMBOL:
+        hold_reason = "max_active_per_symbol"
     elif _now_ts() < int(RISK_STATE.get("cooldown_until", {}).get(symbol, 0)):
         hold_reason = "cooldown_active"
     elif (_now_ts() - int(LAST_SIGNAL_TS.get(symbol, 0))) < MIN_SIGNAL_GAP_SEC:
@@ -2111,23 +2245,22 @@ async def analyze_market(
 
     if hold_reason:
         signal = {"direction": "HOLD", "confidence": 0, "reason": hold_reason}
-    elif signal.get("direction") in ("BUY", "SELL"):
-        if int(signal.get("confidence", 0)) < MIN_CONFIDENCE_TO_OPEN:
-            signal = {
-                "direction": "HOLD",
-                "confidence": int(signal.get("confidence", 0)),
-                "reason": f"below_min_confidence_{MIN_CONFIDENCE_TO_OPEN}",
-                "entry": signal.get("entry"),
-                "sl": signal.get("sl"),
-                "tp": signal.get("tp"),
-                "tp1": signal.get("tp1"),
-                "tp2": signal.get("tp2"),
-                "entry_type": signal.get("entry_type"),
-                "mode": signal.get("mode"),
-                "quality_score": signal.get("quality_score"),
-                "quality_grade": signal.get("quality_grade"),
-                "quality_stars": signal.get("quality_stars"),
-            }
+    elif signal.get("direction") in ("BUY", "SELL") and int(signal.get("confidence", 0)) < MIN_CONFIDENCE_TO_OPEN:
+        signal = {
+            "direction": "HOLD",
+            "confidence": int(signal.get("confidence", 0)),
+            "reason": f"below_min_confidence_{MIN_CONFIDENCE_TO_OPEN}",
+            "entry": signal.get("entry"),
+            "sl": signal.get("sl"),
+            "tp": signal.get("tp"),
+            "tp1": signal.get("tp1"),
+            "tp2": signal.get("tp2"),
+            "entry_type": signal.get("entry_type"),
+            "mode": signal.get("mode"),
+            "quality_score": signal.get("quality_score"),
+            "quality_grade": signal.get("quality_grade"),
+            "quality_stars": signal.get("quality_stars"),
+        }
 
     if emit_telegram:
         await maybe_emit_market_messages(symbol, timeframe, context, signal)
@@ -2149,6 +2282,7 @@ async def analyze_market(
             "daily_R": RISK_STATE["daily_R"],
             "active_total": _active_total(),
             "max_active_total": MAX_ACTIVE_TOTAL,
+            "max_active_per_symbol": MAX_ACTIVE_PER_SYMBOL,
         }
 
     return {
@@ -2166,6 +2300,7 @@ async def analyze_market(
         "daily_R": RISK_STATE["daily_R"],
         "active_total": _active_total(),
         "max_active_total": MAX_ACTIVE_TOTAL,
+        "max_active_per_symbol": MAX_ACTIVE_PER_SYMBOL,
     }
 
 
@@ -2183,11 +2318,7 @@ async def scan(req: ScanRequest):
 
     for sym in req.symbols:
         try:
-            res = await analyze_market(
-                AnalyzeRequest(symbol=sym, timeframe=timeframe),
-                manage_trade=False,
-                emit_telegram=False,
-            )
+            res = await analyze_market(AnalyzeRequest(symbol=sym, timeframe=timeframe), manage_trade=False, emit_telegram=False)
             sig = res.get("signal", {})
             brief = res.get("briefing", {})
             rows.append({
@@ -2204,6 +2335,9 @@ async def scan(req: ScanRequest):
                 "entry_type": sig.get("entry_type", sig.get("mode", "")),
                 "active_trade": bool(res.get("active", False)),
                 "bias": brief.get("bias"),
+                "monthly_bias": brief.get("monthly_bias"),
+                "weekly_bias": brief.get("weekly_bias"),
+                "daily_bias": brief.get("daily_bias"),
                 "market_state": brief.get("market_state"),
                 "area_of_interest": brief.get("area_of_interest"),
                 "preferred_setup": brief.get("preferred_setup"),
@@ -2224,6 +2358,9 @@ async def scan(req: ScanRequest):
                 "entry_type": "",
                 "active_trade": False,
                 "bias": None,
+                "monthly_bias": None,
+                "weekly_bias": None,
+                "daily_bias": None,
                 "market_state": None,
                 "area_of_interest": None,
                 "preferred_setup": None,
@@ -2245,6 +2382,7 @@ async def scan(req: ScanRequest):
         "daily_R": RISK_STATE["daily_R"],
         "active_total": _active_total(),
         "max_active_total": MAX_ACTIVE_TOTAL,
+        "max_active_per_symbol": MAX_ACTIVE_PER_SYMBOL,
     }
 
 
@@ -2310,6 +2448,7 @@ async def state(limit: int = 100) -> Dict[str, Any]:
         "daily_R": RISK_STATE["daily_R"],
         "active_total": _active_total(),
         "max_active_total": MAX_ACTIVE_TOTAL,
+        "max_active_per_symbol": MAX_ACTIVE_PER_SYMBOL,
         "server_time": _now_ts(),
     }
 
