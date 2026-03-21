@@ -21,8 +21,8 @@ const TIMEFRAMES = [
   { value: "4h", label: "4h" },
 ];
 
-const LS_KEY_STATE = "dex_bot_ui_state_v7";
-const LS_KEY_HISTORY = "dex_bot_history_v2";
+const LS_KEY_STATE = "dex_bot_ui_state_v8";
+const LS_KEY_HISTORY = "dex_bot_history_v3";
 
 function safeNum(x, fallback = 0) {
   const n = Number(x);
@@ -72,6 +72,21 @@ function qualityText(grade, stars) {
   return `${grade}${stars ? ` ${stars}` : ""}`;
 }
 
+function formatOutcomeLabel(outcome) {
+  if (outcome === "TP2") return "TP2 WIN";
+  if (outcome === "TP1_ONLY") return "TP1 WIN";
+  if (outcome === "BE") return "BREAKEVEN";
+  if (outcome === "SL") return "STOP LOSS";
+  if (outcome === "OPEN") return "OPEN";
+  return outcome || "—";
+}
+
+function outcomeTone(outcome) {
+  if (outcome === "TP2" || outcome === "TP1_ONLY") return "pillWin";
+  if (outcome === "SL") return "pillLoss";
+  return "";
+}
+
 function normalizeAlignment(raw) {
   const a =
     raw?.alignment ||
@@ -112,6 +127,9 @@ function normalizeAlignment(raw) {
 function normalizeBriefing(brief = {}) {
   return {
     bias: brief?.bias ?? "-",
+    monthlyBias: brief?.monthly_bias ?? "-",
+    weeklyBias: brief?.weekly_bias ?? "-",
+    dailyBias: brief?.daily_bias ?? "-",
     structure: brief?.structure ?? "-",
     previousTrend: brief?.previous_trend ?? "-",
     trendStrength:
@@ -130,6 +148,20 @@ function normalizeBriefing(brief = {}) {
     preferredSetup: brief?.preferred_setup ?? "-",
     confirmationNeeded: brief?.confirmation_needed ?? "-",
     invalidation: brief?.invalidation ?? "-",
+  };
+}
+
+function normalizeWeeklyOutlook(weekly = {}) {
+  return {
+    weekKey: weekly?.week_key ?? "-",
+    totalClosed: safeNum(weekly?.total_closed, 0),
+    wins: safeNum(weekly?.wins, 0),
+    losses: safeNum(weekly?.losses, 0),
+    partials: safeNum(weekly?.partials, 0),
+    fullWins: safeNum(weekly?.full_wins, 0),
+    breakevens: safeNum(weekly?.breakevens, 0),
+    winRate: safeNum(weekly?.win_rate, 0),
+    lossRate: safeNum(weekly?.loss_rate, 0),
   };
 }
 
@@ -153,6 +185,7 @@ function normalizeAnalyzeResponse(data) {
   const confidence = safeNum(sig?.confidence ?? sig?.score ?? 0, 0);
   const alignment = normalizeAlignment(data);
   const briefing = normalizeBriefing(data?.briefing || {});
+  const weeklyOutlook = normalizeWeeklyOutlook(data?.weekly_outlook || {});
   const maxActive =
     safeNum(data?.max_active_total ?? data?.limits?.max_active_total ?? 5, 5) || 5;
 
@@ -168,6 +201,7 @@ function normalizeAnalyzeResponse(data) {
     tp1: sig?.tp1 ?? null,
     tp2: sig?.tp2 ?? null,
     tp1Hit: !!sig?.tp1_hit,
+    tp1RMultiple: sig?.tp1_r_multiple ?? null,
     rMultiple: sig?.r_multiple ?? null,
     reason: sig?.reason ?? data?.reason ?? "—",
     price: data?.price ?? sig?.price ?? null,
@@ -177,6 +211,7 @@ function normalizeAnalyzeResponse(data) {
     qualityScore: safeNum(sig?.quality_score ?? null, null),
     alignment,
     briefing,
+    weeklyOutlook,
     active: !!data?.active,
     actions: Array.isArray(data?.actions) ? data.actions : [],
     closedTrade: data?.closed_trade ?? null,
@@ -187,17 +222,36 @@ function normalizeAnalyzeResponse(data) {
   };
 }
 
-function makeHistoryItem({ symbol, timeframe, signal, openedAt, closedAt, outcome, closePrice }) {
+function makeHistoryItem({
+  symbol,
+  timeframe,
+  signal,
+  openedAt,
+  closedAt,
+  outcome,
+  closePrice,
+  weekKey,
+  dayKey,
+}) {
   const entry = safeNum(signal?.entry, null);
   const sl = safeNum(signal?.sl, null);
   const tp = safeNum(signal?.tp2 ?? signal?.tp, null);
+  const tp1 = safeNum(signal?.tp1, null);
   const direction = signal?.direction || "HOLD";
 
   let rMult = null;
+  let tp1RMult = null;
+
   if (entry !== null && sl !== null && tp !== null) {
     const risk = Math.abs(entry - sl);
     const reward = Math.abs(tp - entry);
     if (risk > 0) rMult = reward / risk;
+  }
+
+  if (entry !== null && sl !== null && tp1 !== null) {
+    const risk = Math.abs(entry - sl);
+    const reward = Math.abs(tp1 - entry);
+    if (risk > 0) tp1RMult = reward / risk;
   }
 
   return {
@@ -209,18 +263,21 @@ function makeHistoryItem({ symbol, timeframe, signal, openedAt, closedAt, outcom
     entry,
     sl,
     tp,
-    tp1: safeNum(signal?.tp1, null),
+    tp1,
     tp2: safeNum(signal?.tp2 ?? signal?.tp, null),
     openedAt: openedAt ?? null,
     closedAt: closedAt ?? null,
     outcome: outcome ?? "OPEN",
     closePrice: closePrice ?? null,
     rMult: rMult !== null ? Number(rMult.toFixed(2)) : null,
+    tp1RMult: tp1RMult !== null ? Number(tp1RMult.toFixed(2)) : null,
     reason: signal?.reason ?? "—",
     tp1Hit: !!signal?.tp1_hit,
     entryType: pickModeLabel(signal),
     qualityGrade: signal?.quality_grade ?? null,
     qualityStars: signal?.quality_stars ?? "",
+    weekKey: weekKey ?? null,
+    dayKey: dayKey ?? null,
   };
 }
 
@@ -243,25 +300,38 @@ function normalizeBackendHistoryItem(t = {}) {
     outcome: t.status === "CLOSED" ? t.outcome || "CLOSED" : "OPEN",
     closePrice: safeNum(t.closed_price, null),
     rMult: safeNum(t.r_multiple, null),
+    tp1RMult: safeNum(t.tp1_r_multiple, null),
     reason: t.reason || "—",
     tp1Hit: !!t.tp1_hit,
     entryType: pickModeLabel(t),
     qualityGrade: t.quality_grade ?? null,
     qualityStars: t.quality_stars ?? "",
+    weekKey: t.week_key ?? null,
+    dayKey: t.day_key ?? null,
   };
 }
-
 function calcPerformance(items) {
-  const closed = items.filter((x) => x.outcome === "TP2" || x.outcome === "SL");
-  const wins = closed.filter((x) => x.outcome === "TP2").length;
+  const closed = items.filter((x) =>
+    x.outcome === "TP2" ||
+    x.outcome === "TP1_ONLY" ||
+    x.outcome === "BE" ||
+    x.outcome === "SL"
+  );
+
+  const wins = closed.filter((x) => x.outcome === "TP2" || x.outcome === "TP1_ONLY").length;
   const losses = closed.filter((x) => x.outcome === "SL").length;
+  const breakevens = closed.filter((x) => x.outcome === "BE").length;
   const total = closed.length;
 
   const winRate = total ? (wins / total) * 100 : 0;
+  const lossRate = total ? (losses / total) * 100 : 0;
+  const breakevenRate = total ? (breakevens / total) * 100 : 0;
 
   let sumR = 0;
   for (const t of closed) {
     if (t.outcome === "TP2") sumR += t.rMult ?? 1;
+    if (t.outcome === "TP1_ONLY") sumR += t.tp1RMult ?? 0.7;
+    if (t.outcome === "BE") sumR += 0;
     if (t.outcome === "SL") sumR -= 1;
   }
   const avgR = total ? sumR / total : 0;
@@ -272,12 +342,15 @@ function calcPerformance(items) {
   let curL = 0;
 
   for (const t of closed) {
-    if (t.outcome === "TP2") {
+    if (t.outcome === "TP2" || t.outcome === "TP1_ONLY") {
       curW += 1;
       curL = 0;
     } else if (t.outcome === "SL") {
       curL += 1;
       curW = 0;
+    } else if (t.outcome === "BE") {
+      curW = 0;
+      curL = 0;
     }
     bestWinStreak = Math.max(bestWinStreak, curW);
     bestLoseStreak = Math.max(bestLoseStreak, curL);
@@ -287,6 +360,7 @@ function calcPerformance(items) {
   let last30R = 0;
   for (const t of last30) {
     if (t.outcome === "TP2") last30R += t.rMult ?? 1;
+    if (t.outcome === "TP1_ONLY") last30R += t.tp1RMult ?? 0.7;
     if (t.outcome === "SL") last30R -= 1;
   }
 
@@ -294,7 +368,10 @@ function calcPerformance(items) {
     closedCount: total,
     wins,
     losses,
+    breakevens,
     winRate: Number(winRate.toFixed(1)),
+    lossRate: Number(lossRate.toFixed(1)),
+    breakevenRate: Number(breakevenRate.toFixed(1)),
     sumR: Number(sumR.toFixed(2)),
     avgR: Number(avgR.toFixed(2)),
     bestWinStreak,
@@ -303,6 +380,7 @@ function calcPerformance(items) {
     last30R: Number(last30R.toFixed(2)),
   };
 }
+
 function computeStrength(row) {
   const conf = safeNum(row.confidence, 0);
 
@@ -518,6 +596,7 @@ function buildCommandCenter(activeTrade, liveTracker, price) {
   const checklist = [];
   if (activeTrade.tp1_hit) {
     checklist.push("TP1 already hit. Protect the position.");
+    checklist.push("This trade should already count as a secured win.");
     checklist.push("Focus on trailing and not giving back profit.");
   } else {
     checklist.push("Watch whether price can first secure TP1.");
@@ -615,7 +694,8 @@ export default function Dashboard() {
   const [candles, setCandles] = useState(restored?.candles || []);
   const [supports, setSupports] = useState(restored?.supports || []);
   const [resistances, setResistances] = useState(restored?.resistances || []);
-    const [direction, setDirection] = useState(restored?.direction || "HOLD");
+
+  const [direction, setDirection] = useState(restored?.direction || "HOLD");
   const [confidence, setConfidence] = useState(restored?.confidence || 0);
   const [entry, setEntry] = useState(restored?.entry ?? null);
   const [sl, setSl] = useState(restored?.sl ?? null);
@@ -635,6 +715,9 @@ export default function Dashboard() {
   const [alignmentDetails, setAlignmentDetails] = useState(restored?.alignmentDetails || []);
 
   const [bias, setBias] = useState(restored?.bias || "-");
+  const [monthlyBias, setMonthlyBias] = useState(restored?.monthlyBias || "-");
+  const [weeklyBias, setWeeklyBias] = useState(restored?.weeklyBias || "-");
+  const [dailyBias, setDailyBias] = useState(restored?.dailyBias || "-");
   const [structure, setStructure] = useState(restored?.structure || "-");
   const [previousTrend, setPreviousTrend] = useState(restored?.previousTrend || "-");
   const [trendStrength, setTrendStrength] = useState(restored?.trendStrength ?? null);
@@ -654,6 +737,7 @@ export default function Dashboard() {
   const [scanLoading, setScanLoading] = useState(restored?.scanLoading || false);
   const [ranked, setRanked] = useState(restored?.ranked || []);
   const [dailyOutlook, setDailyOutlook] = useState(restored?.dailyOutlook || null);
+  const [weeklyOutlook, setWeeklyOutlook] = useState(restored?.weeklyOutlook || null);
   const [liveTracker, setLiveTracker] = useState(restored?.liveTracker || null);
   const [dailyR, setDailyR] = useState(restored?.dailyR || 0);
   const [activeTotal, setActiveTotal] = useState(restored?.activeTotal || 0);
@@ -686,6 +770,7 @@ export default function Dashboard() {
   const [openSections, setOpenSections] = useState(
     restored?.openSections || {
       dailyOutlook: true,
+      weeklyStats: true,
       aiSentiment: true,
       openTrades: true,
       commandCenter: true,
@@ -706,8 +791,7 @@ export default function Dashboard() {
   }, []);
 
   const performance = useMemo(() => calcPerformance(history), [history]);
-
-  const symbolsList = useMemo(
+   const symbolsList = useMemo(
     () => VOLATILITY_OPTIONS.filter((v) => v.symbol !== "ALL").map((v) => v.symbol),
     []
   );
@@ -774,6 +858,14 @@ export default function Dashboard() {
     if (!Number.isFinite(risk) || risk <= 0) return null;
     return reward / risk;
   }, [entry, sl, tp2]);
+
+  const tp1Multiple = useMemo(() => {
+    if (entry == null || sl == null || tp1 == null) return null;
+    const risk = Math.abs(Number(entry) - Number(sl));
+    const reward = Math.abs(Number(tp1) - Number(entry));
+    if (!Number.isFinite(risk) || risk <= 0) return null;
+    return reward / risk;
+  }, [entry, sl, tp1]);
 
   const estimatedTp1Profit = useMemo(() => {
     if (!riskAmount || entry == null || sl == null || tp1 == null) return null;
@@ -850,6 +942,9 @@ export default function Dashboard() {
           alignmentLabel,
           alignmentDetails,
           bias,
+          monthlyBias,
+          weeklyBias,
+          dailyBias,
           structure,
           previousTrend,
           trendStrength,
@@ -867,6 +962,7 @@ export default function Dashboard() {
           liquidityAbove,
           ranked,
           dailyOutlook,
+          weeklyOutlook,
           liveTracker,
           dailyR,
           activeTotal,
@@ -910,6 +1006,9 @@ export default function Dashboard() {
     alignmentLabel,
     alignmentDetails,
     bias,
+    monthlyBias,
+    weeklyBias,
+    dailyBias,
     structure,
     previousTrend,
     trendStrength,
@@ -927,6 +1026,7 @@ export default function Dashboard() {
     liquidityAbove,
     ranked,
     dailyOutlook,
+    weeklyOutlook,
     liveTracker,
     dailyR,
     activeTotal,
@@ -943,6 +1043,7 @@ export default function Dashboard() {
     riskPercent,
     openSections,
   ]);
+
   useEffect(() => {
     try {
       localStorage.setItem(LS_KEY_HISTORY, JSON.stringify(history.slice(-500)));
@@ -985,6 +1086,9 @@ export default function Dashboard() {
     setAlignmentLabel(null);
     setAlignmentDetails([]);
     setBias("-");
+    setMonthlyBias("-");
+    setWeeklyBias("-");
+    setDailyBias("-");
     setStructure("-");
     setPreviousTrend("-");
     setTrendStrength(null);
@@ -1039,6 +1143,13 @@ export default function Dashboard() {
       ? "pillLoss"
       : "";
 
+  const weeklyWinTone =
+    safeNum(weeklyOutlook?.winRate, 0) >= 60
+      ? "pillWin"
+      : safeNum(weeklyOutlook?.winRate, 0) <= 40 && safeNum(weeklyOutlook?.totalClosed, 0) > 0
+      ? "pillLoss"
+      : "";
+
   const runAnalyze = useCallback(
     async (symbol, tf) => {
       if (symbol === "ALL") return null;
@@ -1079,6 +1190,9 @@ export default function Dashboard() {
         setAlignmentDetails(Array.isArray(norm.alignment?.details) ? norm.alignment.details : []);
 
         setBias(norm.briefing.bias);
+        setMonthlyBias(norm.briefing.monthlyBias);
+        setWeeklyBias(norm.briefing.weeklyBias);
+        setDailyBias(norm.briefing.dailyBias);
         setStructure(norm.briefing.structure);
         setPreviousTrend(norm.briefing.previousTrend);
         setTrendStrength(norm.briefing.trendStrength);
@@ -1101,6 +1215,7 @@ export default function Dashboard() {
         setLastActions(norm.actions || []);
         setLiveTracker(norm.liveTracker || null);
         if (norm.dailyOutlook) setDailyOutlook(norm.dailyOutlook);
+        if (norm.weeklyOutlook) setWeeklyOutlook(norm.weeklyOutlook);
 
         if (norm.active && norm.raw?.signal) {
           setActiveTrade({
@@ -1146,6 +1261,8 @@ export default function Dashboard() {
                 signal: norm.raw.signal,
                 openedAt,
                 outcome: "OPEN",
+                weekKey: norm.raw?.signal?.week_key ?? null,
+                dayKey: norm.raw?.signal?.day_key ?? null,
               });
               return [...prev, item].slice(-500);
             });
@@ -1154,7 +1271,12 @@ export default function Dashboard() {
 
         if (
           norm.closedTrade?.outcome &&
-          (norm.closedTrade.outcome === "TP2" || norm.closedTrade.outcome === "SL")
+          (
+            norm.closedTrade.outcome === "TP2" ||
+            norm.closedTrade.outcome === "TP1_ONLY" ||
+            norm.closedTrade.outcome === "BE" ||
+            norm.closedTrade.outcome === "SL"
+          )
         ) {
           const outcome = norm.closedTrade.outcome;
           const closedAt = norm.closedTrade.closed_at ?? Math.floor(Date.now() / 1000);
@@ -1164,10 +1286,19 @@ export default function Dashboard() {
             for (let i = next.length - 1; i >= 0; i--) {
               const t = next[i];
               if (t.symbol === symbol && t.timeframe === tf && t.outcome === "OPEN") {
-                next[i] = { ...t, outcome, closedAt, closePrice: norm.price ?? t.closePrice };
+                next[i] = {
+                  ...t,
+                  outcome,
+                  closedAt,
+                  closePrice: norm.price ?? t.closePrice,
+                  tp1Hit: !!norm.closedTrade?.tp1_hit,
+                  rMult: safeNum(norm.closedTrade?.r_multiple, t.rMult),
+                  tp1RMult: safeNum(norm.closedTrade?.tp1_r_multiple, t.tp1RMult),
+                };
                 return next.slice(-500);
               }
             }
+
             const item = makeHistoryItem({
               symbol,
               timeframe: tf,
@@ -1176,6 +1307,8 @@ export default function Dashboard() {
               closedAt,
               outcome,
               closePrice: norm.price ?? null,
+              weekKey: norm.closedTrade?.week_key ?? null,
+              dayKey: norm.closedTrade?.day_key ?? null,
             });
             return [...next, item].slice(-500);
           });
@@ -1207,8 +1340,7 @@ export default function Dashboard() {
       }
     },
     [dailyR, activeTotal, maxActiveTotal]
-  );
-
+  ); 
   const syncGlobalState = useCallback(async () => {
     try {
       const data = await withTimeout(fetchGlobalState(150), 12000, "Global state");
@@ -1216,10 +1348,12 @@ export default function Dashboard() {
       const activeTrades = Array.isArray(data?.active_trades) ? data.active_trades : [];
       const backendHistory = Array.isArray(data?.history) ? data.history : [];
       const perf = data?.performance || null;
+      const weekly = data?.weekly || data?.weekly_outlook || null;
 
       setDailyR(safeNum(data?.daily_R ?? 0, 0));
       setActiveTotal(safeNum(data?.active_total ?? 0, 0));
       setMaxActiveTotal(safeNum(data?.max_active_total ?? 5, 5));
+      if (weekly) setWeeklyOutlook(normalizeWeeklyOutlook(weekly));
 
       const normalizedHistory = backendHistory.map(normalizeBackendHistoryItem);
       setHistory(normalizedHistory);
@@ -1237,6 +1371,8 @@ export default function Dashboard() {
           entry: t.entry ?? null,
           sl: t.sl ?? null,
           tp: t.tp2 ?? t.tp ?? null,
+          tp1: t.tp1 ?? null,
+          tp2: t.tp2 ?? t.tp ?? null,
           entry_type: pickModeLabel(t),
           reversal_risk: t?.meta?.reversal_risk || null,
         }));
@@ -1323,6 +1459,7 @@ export default function Dashboard() {
 
       setRanked(newRanked);
       setDailyOutlook(data?.daily_outlook || null);
+      if (data?.weekly_outlook) setWeeklyOutlook(normalizeWeeklyOutlook(data.weekly_outlook));
       setDailyR(safeNum(data?.daily_R ?? 0, 0));
       setActiveTotal(safeNum(data?.active_total ?? 0, 0));
 
@@ -1367,7 +1504,8 @@ export default function Dashboard() {
       return;
     }
     await runAnalyze(selectedSymbol, timeframe);
-  }, [runAnalyze, onScan, selectedSymbol, timeframe]); 
+  }, [runAnalyze, onScan, selectedSymbol, timeframe]);
+
   useEffect(() => {
     if (selectedSymbol === "ALL") return;
 
@@ -1410,6 +1548,9 @@ export default function Dashboard() {
               }
 
               setLiveTracker(msg?.live_tracker || null);
+              if (msg?.weekly_outlook) {
+                setWeeklyOutlook(normalizeWeeklyOutlook(msg.weekly_outlook));
+              }
 
               lastLiveAtRef.current = Date.now();
               if (!analyzeBusyRef.current && !scanBusyRef.current) setStatus("LIVE");
@@ -1649,8 +1790,12 @@ export default function Dashboard() {
         <div className="perfGrid" style={{ marginTop: 14 }}>
           <div className="perfBox"><div className="perfLabel">Today Win %</div><div className="perfValue">{performance.winRate}%</div></div>
           <div className="perfBox"><div className="perfLabel">Closed Trades</div><div className="perfValue">{performance.closedCount}</div></div>
+          <div className="perfBox"><div className="perfLabel">Wins</div><div className="perfValue">{performance.wins}</div></div>
+          <div className="perfBox"><div className="perfLabel">Losses</div><div className="perfValue">{performance.losses}</div></div>
+          <div className="perfBox"><div className="perfLabel">B/E</div><div className="perfValue">{performance.breakevens}</div></div>
           <div className="perfBox"><div className="perfLabel">Sum R</div><div className="perfValue">{performance.sumR}</div></div>
           <div className="perfBox"><div className="perfLabel">Best Setup</div><div className="perfValue" style={{ fontSize: 14 }}>{personalBestSetup}</div></div>
+          <div className="perfBox"><div className="perfLabel">Best Market</div><div className="perfValue" style={{ fontSize: 14 }}>{personalBestMarket}</div></div>
         </div>
       </div>
 
@@ -1674,8 +1819,71 @@ export default function Dashboard() {
       ) : null}
 
       <CollapsibleCard
-        className="sentimentCard"
+        title="Weekly Stats"
+        className="weeklyStatsCard"
+        isOpen={openSections.weeklyStats}
+        onToggle={() => toggleSection("weeklyStats")}
+        right={
+          <span className={`pill ${weeklyWinTone}`}>
+            {weeklyOutlook?.weekKey || "Current Week"}
+          </span>
+        }
+      >
+        <div className="perfGrid">
+          <div className="perfBox">
+            <div className="perfLabel">Week</div>
+            <div className="perfValue" style={{ fontSize: 15 }}>
+              {weeklyOutlook?.weekKey || "-"}
+            </div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">Weekly Win %</div>
+            <div className="perfValue">
+              {safeNum(weeklyOutlook?.winRate, 0)}%
+            </div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">Weekly Loss %</div>
+            <div className="perfValue">
+              {safeNum(weeklyOutlook?.lossRate, 0)}%
+            </div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">Closed</div>
+            <div className="perfValue">
+              {safeNum(weeklyOutlook?.totalClosed, 0)}
+            </div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">Wins</div>
+            <div className="perfValue">
+              {safeNum(weeklyOutlook?.wins, 0)}
+            </div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">Losses</div>
+            <div className="perfValue">
+              {safeNum(weeklyOutlook?.losses, 0)}
+            </div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">TP1 Wins</div>
+            <div className="perfValue">
+              {safeNum(weeklyOutlook?.partials, 0)}
+            </div>
+          </div>
+          <div className="perfBox">
+            <div className="perfLabel">TP2 Wins</div>
+            <div className="perfValue">
+              {safeNum(weeklyOutlook?.fullWins, 0)}
+            </div>
+          </div>
+        </div>
+      </CollapsibleCard>
 
+      <CollapsibleCard
+        title="AI Sentiment"
+        className="sentimentCard"
         isOpen={openSections.aiSentiment}
         onToggle={() => toggleSection("aiSentiment")}
         right={<span className={`pill ${aiSentiment.tone}`}>{aiSentiment.sentiment}</span>}
@@ -1742,7 +1950,6 @@ export default function Dashboard() {
           </div>
         </div>
       </CollapsibleCard>
-
       {topPick ? (
         <CollapsibleCard
           title="Top Pick"
@@ -1822,6 +2029,9 @@ export default function Dashboard() {
           <div className="signalLine"><span className="smallText">Market</span><strong>{selectedSymbol} — {selectedName}</strong></div>
           <div className="signalLine"><span className="smallText">Timeframe</span><strong>{timeframe}</strong></div>
           <div className="signalLine"><span className="smallText">Bias</span><strong>{bias}</strong></div>
+          <div className="signalLine"><span className="smallText">Monthly Bias</span><strong>{monthlyBias}</strong></div>
+          <div className="signalLine"><span className="smallText">Weekly Bias</span><strong>{weeklyBias}</strong></div>
+          <div className="signalLine"><span className="smallText">Daily Bias</span><strong>{dailyBias}</strong></div>
           <div className="signalLine"><span className="smallText">Structure</span><strong>{structure}</strong></div>
           <div className="signalLine"><span className="smallText">Previous Trend</span><strong>{previousTrend}</strong></div>
           <div className="signalLine"><span className="smallText">Trend Strength</span><strong>{trendStrength === null ? "-" : trendStrength}</strong></div>
@@ -1867,9 +2077,10 @@ export default function Dashboard() {
 
           <div className="signalLine"><span className="smallText">Entry</span><strong>{entry ?? "-"}</strong></div>
           <div className="signalLine"><span className="smallText">SL</span><strong>{sl ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">TP (Final)</span><strong>{tp ?? "-"}</strong></div>
           <div className="signalLine"><span className="smallText">TP1</span><strong>{tp1 ?? "-"}</strong></div>
           <div className="signalLine"><span className="smallText">TP2</span><strong>{tp2 ?? "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">TP1 R:R</span><strong>{tp1Multiple === null ? "—" : tp1Multiple.toFixed(2)}</strong></div>
+          <div className="signalLine"><span className="smallText">TP2 R:R</span><strong>{rrMultiple === null ? "—" : rrMultiple.toFixed(2)}</strong></div>
 
           <div className="reason"><span className="smallText"><b>Reason:</b> {reason}</span></div>
 
@@ -1916,7 +2127,8 @@ export default function Dashboard() {
 
         <div className="perfGrid" style={{ marginTop: 14 }}>
           <div className="perfBox"><div className="perfLabel">Risk Amount</div><div className="perfValue">${safeNum(riskAmount, 0).toFixed(2)}</div></div>
-          <div className="perfBox"><div className="perfLabel">R:R</div><div className="perfValue">{rrMultiple === null ? "—" : rrMultiple.toFixed(2)}</div></div>
+          <div className="perfBox"><div className="perfLabel">TP1 R:R</div><div className="perfValue">{tp1Multiple === null ? "—" : tp1Multiple.toFixed(2)}</div></div>
+          <div className="perfBox"><div className="perfLabel">TP2 R:R</div><div className="perfValue">{rrMultiple === null ? "—" : rrMultiple.toFixed(2)}</div></div>
           <div className="perfBox"><div className="perfLabel">Est. TP1</div><div className="perfValue">{estimatedTp1Profit === null ? "—" : `$${estimatedTp1Profit.toFixed(2)}`}</div></div>
           <div className="perfBox"><div className="perfLabel">Est. TP2</div><div className="perfValue">{estimatedTp2Profit === null ? "—" : `$${estimatedTp2Profit.toFixed(2)}`}</div></div>
         </div>
@@ -1998,17 +2210,23 @@ export default function Dashboard() {
           className="historyCard"
           isOpen={openSections.history}
           onToggle={() => toggleSection("history")}
-          right={<div className="tiny">Closed: {performance.closedCount} • Wins: {performance.wins} • Losses: {performance.losses} • Win%: {performance.winRate}% • Sum R: {performance.sumR}</div>}
+          right={
+            <div className="tiny">
+              Closed: {performance.closedCount} • Wins: {performance.wins} • Losses: {performance.losses} • B/E: {performance.breakevens} • Win%: {performance.winRate}% • Sum R: {performance.sumR}
+            </div>
+          }
         >
           <div className="perfGrid">
             <div className="perfBox"><div className="perfLabel">Avg R</div><div className="perfValue">{performance.avgR}</div></div>
+            <div className="perfBox"><div className="perfLabel">Win %</div><div className="perfValue">{performance.winRate}%</div></div>
+            <div className="perfBox"><div className="perfLabel">Loss %</div><div className="perfValue">{performance.lossRate}%</div></div>
+            <div className="perfBox"><div className="perfLabel">B/E %</div><div className="perfValue">{performance.breakevenRate}%</div></div>
             <div className="perfBox"><div className="perfLabel">Best Win Streak</div><div className="perfValue">{performance.bestWinStreak}</div></div>
             <div className="perfBox"><div className="perfLabel">Worst Lose Streak</div><div className="perfValue">{performance.bestLoseStreak}</div></div>
             <div className="perfBox"><div className="perfLabel">Last 30 (R)</div><div className="perfValue">{performance.last30R}</div></div>
             <div className="perfBox"><div className="perfLabel">Best Market</div><div className="perfValue">{personalBestMarket}</div></div>
             <div className="perfBox"><div className="perfLabel">Best Setup</div><div className="perfValue" style={{ fontSize: 14 }}>{personalBestSetup}</div></div>
             <div className="perfBox"><div className="perfLabel">Trades Logged</div><div className="perfValue">{history.length}</div></div>
-            <div className="perfBox"><div className="perfLabel">TP Style</div><div className="perfValue">{performance.sumR}</div></div>
           </div>
 
           <div className="historyActions">
@@ -2031,6 +2249,7 @@ export default function Dashboard() {
                   <th>Conf</th>
                   <th>Entry</th>
                   <th>SL</th>
+                  <th>TP1</th>
                   <th>TP2</th>
                   <th>Outcome</th>
                   <th>R</th>
@@ -2039,7 +2258,16 @@ export default function Dashboard() {
               <tbody>
                 {history?.length ? (
                   [...history].slice(-50).reverse().map((t) => (
-                    <tr key={t.id} className={t.outcome === "TP2" ? "winRow" : t.outcome === "SL" ? "lossRow" : ""}>
+                    <tr
+                      key={t.id}
+                      className={
+                        t.outcome === "TP2" || t.outcome === "TP1_ONLY"
+                          ? "winRow"
+                          : t.outcome === "SL"
+                          ? "lossRow"
+                          : ""
+                      }
+                    >
                       <td className="tiny">{t.closedAt ? toIso(t.closedAt) : toIso(t.openedAt)}</td>
                       <td className="mono">{t.symbol}</td>
                       <td>{t.timeframe}</td>
@@ -2049,23 +2277,38 @@ export default function Dashboard() {
                       <td>{safeNum(t.confidence, 0)}%</td>
                       <td>{fmt(t.entry)}</td>
                       <td>{fmt(t.sl)}</td>
+                      <td>{fmt(t.tp1)}</td>
                       <td>{fmt(t.tp2 ?? t.tp)}</td>
-                      <td><span className={`pill ${t.outcome === "TP2" ? "pillWin" : t.outcome === "SL" ? "pillLoss" : ""}`}>{t.outcome}</span></td>
-                      <td>{t.outcome === "TP2" ? `+${t.rMult ?? "?"}` : t.outcome === "SL" ? "-1" : "—"}</td>
+                      <td>
+                        <span className={`pill ${outcomeTone(t.outcome)}`}>
+                          {formatOutcomeLabel(t.outcome)}
+                        </span>
+                      </td>
+                      <td>
+                        {t.outcome === "TP2"
+                          ? `+${t.rMult ?? "?"}`
+                          : t.outcome === "TP1_ONLY"
+                          ? `+${t.tp1RMult ?? "?"}`
+                          : t.outcome === "SL"
+                          ? "-1"
+                          : t.outcome === "BE"
+                          ? "0"
+                          : "—"}
+                      </td>
                     </tr>
                   ))
                 ) : (
-                  <tr><td colSpan="12" className="emptyRow">No history yet.</td></tr>
+                  <tr><td colSpan="13" className="emptyRow">No history yet.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
 
           <div className="tiny note">
-            Note: If your backend sleeps, updates can stall until it wakes.
+            Note: TP1-only closes now count as wins, breakeven stays neutral, and weekly stats should keep climbing through the week instead of waiting until the end.
           </div>
         </CollapsibleCard>
       ) : null}
     </div>
   );
-} 
+}
