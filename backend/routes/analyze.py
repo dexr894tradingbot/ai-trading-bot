@@ -111,7 +111,7 @@ MAX_CONFIRM_BARS_AFTER_TOUCH = 3
 TOUCH_TOLERANCE_ATR = 0.12
 MIN_TREND_ALIGNMENT_SCORE = 5
 
-# Optional: if True, TP1-only trades count as wins in stats/dashboard logic
+# TP1 logic
 COUNT_TP1_AS_WIN = True
 
 # =========================================================
@@ -451,6 +451,8 @@ def quality_grade_from_signal(
         "quality_grade": grade,
         "quality_stars": stars,
     }
+
+
 # =========================================================
 # TELEGRAM / PERFORMANCE
 # =========================================================
@@ -598,7 +600,7 @@ def _performance(last_n: int) -> Dict[str, Any]:
     window = closed[-last_n:]
 
     total = len(window)
-    wins = sum(1 for t in window if t.get("outcome") in ("TP2", "TP1_ONLY", "BE"))
+    wins = sum(1 for t in window if t.get("outcome") in ("TP2", "TP1_ONLY"))
     losses = sum(1 for t in window if t.get("outcome") == "SL")
     partials = sum(1 for t in window if t.get("outcome") == "TP1_ONLY")
     full_wins = sum(1 for t in window if t.get("outcome") == "TP2")
@@ -613,7 +615,7 @@ def _performance(last_n: int) -> Dict[str, Any]:
         elif outcome == "TP1_ONLY":
             r_vals.append(float(t.get("tp1_r_multiple") or TRADE_A_SIZE))
         elif outcome == "BE":
-            r_vals.append(float(t.get("tp1_r_multiple") or TRADE_A_SIZE))
+            r_vals.append(0.0)
         elif outcome == "SL":
             r_vals.append(-1.0)
 
@@ -642,7 +644,7 @@ def _weekly_performance(week_key: Optional[str] = None) -> Dict[str, Any]:
     ]
 
     total = len(closed)
-    wins = sum(1 for t in closed if t.get("outcome") in ("TP2", "TP1_ONLY", "BE"))
+    wins = sum(1 for t in closed if t.get("outcome") in ("TP2", "TP1_ONLY"))
     losses = sum(1 for t in closed if t.get("outcome") == "SL")
     partials = sum(1 for t in closed if t.get("outcome") == "TP1_ONLY")
     full_wins = sum(1 for t in closed if t.get("outcome") == "TP2")
@@ -662,8 +664,6 @@ def _weekly_performance(week_key: Optional[str] = None) -> Dict[str, Any]:
         "win_rate": round(win_rate, 2),
         "loss_rate": round(loss_rate, 2),
     }
-
-
 # =========================================================
 # INDICATORS
 # =========================================================
@@ -805,6 +805,8 @@ def opposite_rejection_block(candle: Dict[str, float], intended_direction: str) 
     if intended_direction == "BUY":
         return is_bearish(candle) and uw >= body * EXHAUSTION_WICK_BODY_RATIO
     return is_bullish(candle) and lw >= body * EXHAUSTION_WICK_BODY_RATIO
+
+
 def is_impulse_candle(candle: Dict[str, float], atr_value: float) -> bool:
     if atr_value <= 0:
         return False
@@ -1044,8 +1046,6 @@ def get_trend_memory(candles: List[Dict[str, float]]) -> Dict[str, Any]:
         "ema20": ema20_now,
         "ema50": ema50_now,
     }
-
-
 # =========================================================
 # SWINGS / STRUCTURE / ZONES
 # =========================================================
@@ -1138,6 +1138,8 @@ def _cluster_levels(levels: List[float], tolerance: float) -> List[List[float]]:
             groups.append([p])
 
     return groups
+
+
 def reaction_zones(candles: List[Dict[str, float]], atr_value: float) -> Dict[str, Any]:
     if len(candles) < 30 or atr_value <= 0:
         return {"supports": [], "resistances": [], "nearest_support": None, "nearest_resistance": None}
@@ -1505,8 +1507,6 @@ def detect_reversal_risk(
     if risk_points >= 4:
         return "MEDIUM"
     return "LOW"
-
-
 def price_touched_zone_recently(
     direction: str,
     candles: List[Dict[str, float]],
@@ -1612,6 +1612,8 @@ def select_targets(
     if tp1 <= tp2:
         tp1 = entry - (entry - tp2) * 0.55
     return {"tp1": tp1, "tp2": tp2}
+
+
 def build_market_context(
     entry_data: List[Dict[str, float]],
     tf15_data: List[Dict[str, float]],
@@ -1975,8 +1977,6 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         "tp1_hint": targets.get("tp1"),
         "reason": reason,
     }
-
-
 def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     if setup.get("direction") not in ("BUY", "SELL"):
         return {"direction": "HOLD", "confidence": 0, "reason": setup.get("reason", "no_setup")}
