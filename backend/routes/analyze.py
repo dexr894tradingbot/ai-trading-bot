@@ -115,6 +115,26 @@ MIN_TREND_ALIGNMENT_SCORE = 5
 COUNT_TP1_AS_WIN = True
 
 # =========================================================
+# NEW LATE-ENTRY / EXHAUSTION FILTERS
+# =========================================================
+# Block entries when price is already too close to opposing liquidity
+LATE_ENTRY_NEAR_POOL_ATR = 0.45
+
+# Block entries when price is already too close to final target
+LATE_ENTRY_NEAR_TP2_ATR = 0.55
+
+# Require entry to still have enough expansion left after confirmation
+MIN_REMAINING_ROOM_ATR = 0.85
+
+# If price has stretched too far from selected AOI midpoint, skip
+MAX_ENTRY_DISTANCE_FROM_ZONE_MID_ATR = 1.65
+
+# If price already ran too far in one direction over recent bars, skip
+RECENT_PUSH_LOOKBACK = 4
+RECENT_PUSH_MAX_ATR = 1.35
+
+
+# =========================================================
 # TIMEFRAME FETCH CANDIDATES
 # =========================================================
 HTF_CANDIDATES: Dict[str, List[str]] = {
@@ -285,6 +305,95 @@ def closed_candles(candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return candles[:-1] if len(candles) >= 3 else candles
 
 
+def distance_in_atr(price_a: Optional[float], price_b: Optional[float], atr_value: float) -> float:
+    if price_a is None or price_b is None or atr_value <= 0:
+        return 999999.0
+    return abs(float(price_a) - float(price_b)) / max(1e-9, atr_value)
+
+
+def pool_level(pool: Optional[Dict[str, Any]]) -> Optional[float]:
+    if not pool:
+        return None
+    lvl = pool.get("level")
+    return safe_float(lvl, None) if lvl is not None else None
+
+
+def recent_push_against_room(
+    direction: str,
+    candles: List[Dict[str, float]],
+    atr_value: float,
+    lookback: int = RECENT_PUSH_LOOKBACK,
+) -> bool:
+    if len(candles) < lookback or atr_value <= 0:
+        return False
+
+    recent = candles[-lookback:]
+    first_open = safe_float(recent[0]["open"])
+    last_close = safe_float(recent[-1]["close"])
+
+    move = last_close - first_open if direction == "BUY" else first_open - last_close
+    return move >= atr_value * RECENT_PUSH_MAX_ATR
+
+
+def entry_too_close_to_opposing_pool(
+    direction: str,
+    entry: float,
+    pools: Dict[str, Any],
+    atr_value: float,
+) -> bool:
+    if atr_value <= 0:
+        return False
+
+    if direction == "BUY":
+        high_pool = pool_level(pools.get("nearest_high_pool"))
+        if high_pool is None:
+            return False
+        return 0 <= (high_pool - entry) <= atr_value * LATE_ENTRY_NEAR_POOL_ATR
+
+    low_pool = pool_level(pools.get("nearest_low_pool"))
+    if low_pool is None:
+        return False
+    return 0 <= (entry - low_pool) <= atr_value * LATE_ENTRY_NEAR_POOL_ATR
+
+
+def entry_too_far_from_zone_mid(
+    entry: float,
+    zone: Optional[Dict[str, Any]],
+    atr_value: float,
+) -> bool:
+    if not zone or atr_value <= 0:
+        return False
+
+    mid = (safe_float(zone["low"]) + safe_float(zone["high"])) / 2.0
+    return abs(entry - mid) > atr_value * MAX_ENTRY_DISTANCE_FROM_ZONE_MID_ATR
+
+
+def not_enough_remaining_room(
+    direction: str,
+    entry: float,
+    tp2: float,
+    atr_value: float,
+) -> bool:
+    if atr_value <= 0:
+        return False
+
+    remaining = (tp2 - entry) if direction == "BUY" else (entry - tp2)
+    return remaining < atr_value * MIN_REMAINING_ROOM_ATR
+
+
+def too_close_to_tp2_after_entry(
+    direction: str,
+    entry: float,
+    tp2: float,
+    atr_value: float,
+) -> bool:
+    if atr_value <= 0:
+        return False
+
+    remaining = (tp2 - entry) if direction == "BUY" else (entry - tp2)
+    return remaining <= atr_value * LATE_ENTRY_NEAR_TP2_ATR
+
+
 def trade_progress_percent_fn(
     direction: str,
     entry: float,
@@ -344,8 +453,6 @@ def build_live_trade_tracker(trade: Dict[str, Any], current_price: float) -> Dic
         "quality_grade": trade.get("quality_grade"),
         "quality_stars": trade.get("quality_stars"),
     }
-
-
 def build_daily_market_outlook(ranked_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     actionable = [r for r in ranked_rows if r.get("direction") in ("BUY", "SELL")]
     best = actionable[0] if actionable else (ranked_rows[0] if ranked_rows else None)
@@ -664,6 +771,8 @@ def _weekly_performance(week_key: Optional[str] = None) -> Dict[str, Any]:
         "win_rate": round(win_rate, 2),
         "loss_rate": round(loss_rate, 2),
     }
+
+
 # =========================================================
 # INDICATORS
 # =========================================================
@@ -1507,6 +1616,8 @@ def detect_reversal_risk(
     if risk_points >= 4:
         return "MEDIUM"
     return "LOW"
+
+
 def price_touched_zone_recently(
     direction: str,
     candles: List[Dict[str, float]],
@@ -1757,8 +1868,6 @@ def build_market_context(
         "ema_pullback_buy_zone": ema_pullback_buy,
         "ema_pullback_sell_zone": ema_pullback_sell,
     }
-
-
 # =========================================================
 # TRADE SETUP DETECTION
 # =========================================================
@@ -1825,13 +1934,19 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
             return {"direction": "HOLD", "reason": "no_buy_aoi"}
         if ema20 <= ema50:
             return {"direction": "HOLD", "reason": "trend_not_up"}
-        if trend_daily.get("trend") == "DOWN" or trend_weekly.get("trend") == "DOWN" or trend_monthly.get("trend") == "DOWN":
+        if (
+            trend_daily.get("trend") == "DOWN"
+            or trend_weekly.get("trend") == "DOWN"
+            or trend_monthly.get("trend") == "DOWN"
+        ):
             return {"direction": "HOLD", "reason": "htf_bias_conflict_buy"}
         if is_impulse_candle(last, atr_value):
             return {"direction": "HOLD", "reason": "buy_impulse_chase_blocked"}
         if recent_exhaustion_against_trade("BUY", entry_data, atr_value):
             return {"direction": "HOLD", "reason": "buy_exhaustion_block"}
-        if too_far_from_ema(last_close, ema20, atr_value) and not price_touched_zone_recently("BUY", entry_data, zone, atr_value):
+        if too_far_from_ema(last_close, ema20, atr_value) and not price_touched_zone_recently(
+            "BUY", entry_data, zone, atr_value
+        ):
             return {"direction": "HOLD", "reason": "buy_extended_from_ema"}
         if not valid_pullback("BUY", entry_data, ema20, atr_value):
             return {"direction": "HOLD", "reason": "no_buy_pullback"}
@@ -1869,6 +1984,7 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         sl = sl_anchor - atr_value * SL_BUFFER_ATR
         entry = last_close
         risk = entry - sl
+
         if risk <= 0:
             return {"direction": "HOLD", "reason": "invalid_buy_risk"}
 
@@ -1883,7 +1999,11 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         if rr < MIN_RR:
             return {"direction": "HOLD", "reason": "buy_rr_too_low"}
 
-        reason = "bullish_breakout_retest_confirmed_sniper" if breakout_confirm else "bullish_rejection_retest_confirmed_sniper"
+        reason = (
+            "bullish_breakout_retest_confirmed_sniper"
+            if breakout_confirm
+            else "bullish_rejection_retest_confirmed_sniper"
+        )
         return {
             "direction": "BUY",
             "entry": entry,
@@ -1910,13 +2030,19 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         return {"direction": "HOLD", "reason": "no_sell_aoi"}
     if ema20 >= ema50:
         return {"direction": "HOLD", "reason": "trend_not_down"}
-    if trend_daily.get("trend") == "UP" or trend_weekly.get("trend") == "UP" or trend_monthly.get("trend") == "UP":
+    if (
+        trend_daily.get("trend") == "UP"
+        or trend_weekly.get("trend") == "UP"
+        or trend_monthly.get("trend") == "UP"
+    ):
         return {"direction": "HOLD", "reason": "htf_bias_conflict_sell"}
     if is_impulse_candle(last, atr_value):
         return {"direction": "HOLD", "reason": "sell_impulse_chase_blocked"}
     if recent_exhaustion_against_trade("SELL", entry_data, atr_value):
         return {"direction": "HOLD", "reason": "sell_exhaustion_block"}
-    if too_far_from_ema(last_close, ema20, atr_value) and not price_touched_zone_recently("SELL", entry_data, zone, atr_value):
+    if too_far_from_ema(last_close, ema20, atr_value) and not price_touched_zone_recently(
+        "SELL", entry_data, zone, atr_value
+    ):
         return {"direction": "HOLD", "reason": "sell_extended_from_ema"}
     if not valid_pullback("SELL", entry_data, ema20, atr_value):
         return {"direction": "HOLD", "reason": "no_sell_pullback"}
@@ -1954,6 +2080,7 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
     sl = sl_anchor + atr_value * SL_BUFFER_ATR
     entry = last_close
     risk = sl - entry
+
     if risk <= 0:
         return {"direction": "HOLD", "reason": "invalid_sell_risk"}
 
@@ -1968,7 +2095,11 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
     if rr < MIN_RR:
         return {"direction": "HOLD", "reason": "sell_rr_too_low"}
 
-    reason = "bearish_breakout_retest_confirmed_sniper" if breakout_confirm else "bearish_rejection_retest_confirmed_sniper"
+    reason = (
+        "bearish_breakout_retest_confirmed_sniper"
+        if breakout_confirm
+        else "bearish_rejection_retest_confirmed_sniper"
+    )
     return {
         "direction": "SELL",
         "entry": entry,
@@ -1977,6 +2108,8 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         "tp1_hint": targets.get("tp1"),
         "reason": reason,
     }
+
+
 def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     if setup.get("direction") not in ("BUY", "SELL"):
         return {"direction": "HOLD", "confidence": 0, "reason": setup.get("reason", "no_setup")}
@@ -2060,8 +2193,6 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
             "alignment_score": alignment_score,
         },
     }
-
-
 # =========================================================
 # TRADE MANAGEMENT
 # =========================================================
@@ -2119,7 +2250,7 @@ async def close_trade(symbol: str, timeframe: str, trade: Dict[str, Any], outcom
     elif outcome == "TP1_ONLY":
         RISK_STATE["daily_R"] += float(trade.get("tp1_r_multiple") or TRADE_A_SIZE)
     elif outcome == "BE":
-        RISK_STATE["daily_R"] += float(trade.get("tp1_r_multiple") or TRADE_A_SIZE)
+        RISK_STATE["daily_R"] += 0.0
 
     idx = _find_history_index(trade["trade_id"])
     if idx is not None:
