@@ -390,6 +390,8 @@ def too_close_to_tp2_after_entry(
         return False
     remaining = (tp2 - entry) if direction == "BUY" else (entry - tp2)
     return remaining <= atr_value * LATE_ENTRY_NEAR_TP2_ATR
+
+
 def trade_progress_percent_fn(
     direction: str,
     entry: float,
@@ -449,8 +451,6 @@ def build_live_trade_tracker(trade: Dict[str, Any], current_price: float) -> Dic
         "quality_grade": trade.get("quality_grade"),
         "quality_stars": trade.get("quality_stars"),
     }
-
-
 def build_daily_market_outlook(ranked_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     actionable = [r for r in ranked_rows if r.get("direction") in ("BUY", "SELL")]
     best = actionable[0] if actionable else (ranked_rows[0] if ranked_rows else None)
@@ -769,6 +769,8 @@ def _weekly_performance(week_key: Optional[str] = None) -> Dict[str, Any]:
         "win_rate": round(win_rate, 2),
         "loss_rate": round(loss_rate, 2),
     }
+
+
 # =========================================================
 # INDICATORS
 # =========================================================
@@ -831,8 +833,6 @@ def lower_wick(c: Dict[str, float]) -> float:
     cl = safe_float(c["close"])
     l = safe_float(c["low"])
     return min(o, cl) - l
-
-
 def candle_closes_near_high(c: Dict[str, float], threshold: float = 0.70) -> bool:
     rng = max(1e-9, candle_range(c))
     pos = (safe_float(c["close"]) - safe_float(c["low"])) / rng
