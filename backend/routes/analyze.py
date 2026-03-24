@@ -117,22 +117,15 @@ COUNT_TP1_AS_WIN = True
 # =========================================================
 # NEW LATE-ENTRY / EXHAUSTION FILTERS
 # =========================================================
-# Block entries when price is already too close to opposing liquidity
 LATE_ENTRY_NEAR_POOL_ATR = 0.45
-
-# Block entries when price is already too close to final target
 LATE_ENTRY_NEAR_TP2_ATR = 0.55
-
-# Require entry to still have enough expansion left after confirmation
 MIN_REMAINING_ROOM_ATR = 0.85
-
-# If price has stretched too far from selected AOI midpoint, skip
 MAX_ENTRY_DISTANCE_FROM_ZONE_MID_ATR = 1.65
-
-# If price already ran too far in one direction over recent bars, skip
 RECENT_PUSH_LOOKBACK = 4
 RECENT_PUSH_MAX_ATR = 1.35
 
+# New: watchlist should prefer closer actionable zones
+WATCHLIST_MAX_AOI_DISTANCE_ATR = 2.80
 
 # =========================================================
 # TIMEFRAME FETCH CANDIDATES
@@ -318,6 +311,12 @@ def pool_level(pool: Optional[Dict[str, Any]]) -> Optional[float]:
     return safe_float(lvl, None) if lvl is not None else None
 
 
+def zone_mid(zone: Optional[Dict[str, Any]]) -> Optional[float]:
+    if not zone:
+        return None
+    return (safe_float(zone["low"]) + safe_float(zone["high"])) / 2.0
+
+
 def recent_push_against_room(
     direction: str,
     candles: List[Dict[str, float]],
@@ -363,8 +362,9 @@ def entry_too_far_from_zone_mid(
 ) -> bool:
     if not zone or atr_value <= 0:
         return False
-
-    mid = (safe_float(zone["low"]) + safe_float(zone["high"])) / 2.0
+    mid = zone_mid(zone)
+    if mid is None:
+        return False
     return abs(entry - mid) > atr_value * MAX_ENTRY_DISTANCE_FROM_ZONE_MID_ATR
 
 
@@ -376,7 +376,6 @@ def not_enough_remaining_room(
 ) -> bool:
     if atr_value <= 0:
         return False
-
     remaining = (tp2 - entry) if direction == "BUY" else (entry - tp2)
     return remaining < atr_value * MIN_REMAINING_ROOM_ATR
 
@@ -389,11 +388,8 @@ def too_close_to_tp2_after_entry(
 ) -> bool:
     if atr_value <= 0:
         return False
-
     remaining = (tp2 - entry) if direction == "BUY" else (entry - tp2)
     return remaining <= atr_value * LATE_ENTRY_NEAR_TP2_ATR
-
-
 def trade_progress_percent_fn(
     direction: str,
     entry: float,
@@ -453,6 +449,8 @@ def build_live_trade_tracker(trade: Dict[str, Any], current_price: float) -> Dic
         "quality_grade": trade.get("quality_grade"),
         "quality_stars": trade.get("quality_stars"),
     }
+
+
 def build_daily_market_outlook(ranked_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     actionable = [r for r in ranked_rows if r.get("direction") in ("BUY", "SELL")]
     best = actionable[0] if actionable else (ranked_rows[0] if ranked_rows else None)
@@ -771,8 +769,6 @@ def _weekly_performance(week_key: Optional[str] = None) -> Dict[str, Any]:
         "win_rate": round(win_rate, 2),
         "loss_rate": round(loss_rate, 2),
     }
-
-
 # =========================================================
 # INDICATORS
 # =========================================================
@@ -1347,12 +1343,6 @@ def liquidity_pools(candles: List[Dict[str, float]], atr_value: float) -> Dict[s
     }
 
 
-def zone_mid(zone: Optional[Dict[str, Any]]) -> Optional[float]:
-    if not zone:
-        return None
-    return (safe_float(zone["low"]) + safe_float(zone["high"])) / 2.0
-
-
 def candle_interacts_with_zone(candle: Dict[str, float], zone: Dict[str, Any]) -> bool:
     low = safe_float(candle["low"])
     high = safe_float(candle["high"])
@@ -1500,8 +1490,54 @@ def pick_best_trade_zone(
     return best_zone
 
 
+def pick_closest_actionable_zone(
+    direction: str,
+    zones: Dict[str, Any],
+    ema_zone: Optional[Dict[str, Any]],
+    current_price: float,
+    atr_value: float,
+) -> Optional[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+
+    if direction == "BUY":
+        for z in zones.get("supports", []):
+            if safe_float(z["level"]) <= current_price:
+                candidates.append(z)
+    else:
+        for z in zones.get("resistances", []):
+            if safe_float(z["level"]) >= current_price:
+                candidates.append(z)
+
+    if ema_zone:
+        candidates.append(ema_zone)
+
+    if not candidates:
+        return None
+
+    filtered = []
+    for z in candidates:
+        mid = zone_mid(z)
+        if mid is None:
+            continue
+        dist_atr = distance_in_atr(mid, current_price, atr_value)
+        if dist_atr <= WATCHLIST_MAX_AOI_DISTANCE_ATR:
+            filtered.append((dist_atr, z))
+
+    if filtered:
+        filtered.sort(key=lambda x: x[0])
+        return filtered[0][1]
+
+    ranked = []
+    for z in candidates:
+        mid = zone_mid(z)
+        if mid is None:
+            continue
+        ranked.append((distance_in_atr(mid, current_price, atr_value), z))
+
+    ranked.sort(key=lambda x: x[0])
+    return ranked[0][1] if ranked else None
 # =========================================================
-# MARKET INTELLIGENCE
+# MARKET INTELLIGENCE + SETUPS + ROUTES
 # =========================================================
 def combine_bias(
     entry_bias: str,
@@ -1798,7 +1834,7 @@ def build_market_context(
     )
 
     if combined_bias == "UP":
-        aoi = best_buy_zone or nearest_support or nearest_low_pool or ema_pullback_buy
+        aoi = pick_closest_actionable_zone("BUY", zones, ema_pullback_buy, current_price, atr_value)
         preferred_setup = "Wait for bullish reaction at support / demand zone, then confirm on M5"
         confirmation_needed = "Zone touch + bullish rejection/engulfing OR breakout-retest continuation"
         invalidation = (
@@ -1807,7 +1843,7 @@ def build_market_context(
             else "Break of bullish structure"
         )
     elif combined_bias == "DOWN":
-        aoi = best_sell_zone or nearest_resistance or nearest_high_pool or ema_pullback_sell
+        aoi = pick_closest_actionable_zone("SELL", zones, ema_pullback_sell, current_price, atr_value)
         preferred_setup = "Wait for bearish reaction at resistance / supply zone, then confirm on M5"
         confirmation_needed = "Zone touch + bearish rejection/engulfing OR breakout-retest continuation"
         invalidation = (
@@ -1867,10 +1903,11 @@ def build_market_context(
         "best_sell_zone": best_sell_zone,
         "ema_pullback_buy_zone": ema_pullback_buy,
         "ema_pullback_sell_zone": ema_pullback_sell,
+        "watch_buy_zone": pick_closest_actionable_zone("BUY", zones, ema_pullback_buy, current_price, atr_value),
+        "watch_sell_zone": pick_closest_actionable_zone("SELL", zones, ema_pullback_sell, current_price, atr_value),
     }
-# =========================================================
-# TRADE SETUP DETECTION
-# =========================================================
+
+
 def enough_room_to_run(direction: str, entry: float, tp2: float, atr_value: float) -> bool:
     projected = abs(tp2 - entry)
     return projected >= atr_value * MIN_EXPANSION_ATR
@@ -1929,7 +1966,7 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         if align_score < MIN_TREND_ALIGNMENT_SCORE:
             return {"direction": "HOLD", "reason": "buy_alignment_too_weak"}
 
-        zone = context.get("best_buy_zone") or context.get("ema_pullback_buy_zone")
+        zone = context.get("watch_buy_zone") or context.get("best_buy_zone") or context.get("ema_pullback_buy_zone")
         if not zone:
             return {"direction": "HOLD", "reason": "no_buy_aoi"}
         if ema20 <= ema50:
@@ -1944,6 +1981,8 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
             return {"direction": "HOLD", "reason": "buy_impulse_chase_blocked"}
         if recent_exhaustion_against_trade("BUY", entry_data, atr_value):
             return {"direction": "HOLD", "reason": "buy_exhaustion_block"}
+        if recent_push_against_room("BUY", entry_data, atr_value):
+            return {"direction": "HOLD", "reason": "buy_recent_push_exhausted"}
         if too_far_from_ema(last_close, ema20, atr_value) and not price_touched_zone_recently(
             "BUY", entry_data, zone, atr_value
         ):
@@ -1968,9 +2007,8 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         if not (rejection_confirm or breakout_confirm):
             return {"direction": "HOLD", "reason": "buy_confirmation_missing"}
 
-        zone_mid_price = zone_mid(zone)
-        if zone_mid_price is not None and abs(last_close - zone_mid_price) > atr_value * 2.5:
-            return {"direction": "HOLD", "reason": "mid_zone_block"}
+        if entry_too_far_from_zone_mid(last_close, zone, atr_value):
+            return {"direction": "HOLD", "reason": "buy_far_from_zone_mid"}
 
         swing_low = safe_float(structure.get("last_swing_low"), safe_float(zone["low"]))
         local_low = safe_float(get_recent_local_low(entry_data, 4), safe_float(zone["low"]))
@@ -1994,6 +2032,12 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
             return {"direction": "HOLD", "reason": "no_buy_target"}
         if not enough_room_to_run("BUY", entry, tp2, atr_value):
             return {"direction": "HOLD", "reason": "buy_target_too_close"}
+        if not_enough_remaining_room("BUY", entry, tp2, atr_value):
+            return {"direction": "HOLD", "reason": "buy_not_enough_room_left"}
+        if too_close_to_tp2_after_entry("BUY", entry, tp2, atr_value):
+            return {"direction": "HOLD", "reason": "buy_too_close_to_tp2"}
+        if entry_too_close_to_opposing_pool("BUY", entry, pools, atr_value):
+            return {"direction": "HOLD", "reason": "buy_too_close_to_high_pool"}
 
         rr = (tp2 - entry) / max(1e-9, risk)
         if rr < MIN_RR:
@@ -2025,7 +2069,7 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
     if align_score < MIN_TREND_ALIGNMENT_SCORE:
         return {"direction": "HOLD", "reason": "sell_alignment_too_weak"}
 
-    zone = context.get("best_sell_zone") or context.get("ema_pullback_sell_zone")
+    zone = context.get("watch_sell_zone") or context.get("best_sell_zone") or context.get("ema_pullback_sell_zone")
     if not zone:
         return {"direction": "HOLD", "reason": "no_sell_aoi"}
     if ema20 >= ema50:
@@ -2040,6 +2084,8 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         return {"direction": "HOLD", "reason": "sell_impulse_chase_blocked"}
     if recent_exhaustion_against_trade("SELL", entry_data, atr_value):
         return {"direction": "HOLD", "reason": "sell_exhaustion_block"}
+    if recent_push_against_room("SELL", entry_data, atr_value):
+        return {"direction": "HOLD", "reason": "sell_recent_push_exhausted"}
     if too_far_from_ema(last_close, ema20, atr_value) and not price_touched_zone_recently(
         "SELL", entry_data, zone, atr_value
     ):
@@ -2064,9 +2110,8 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
     if not (rejection_confirm or breakout_confirm):
         return {"direction": "HOLD", "reason": "sell_confirmation_missing"}
 
-    zone_mid_price = zone_mid(zone)
-    if zone_mid_price is not None and abs(last_close - zone_mid_price) > atr_value * 2.5:
-        return {"direction": "HOLD", "reason": "mid_zone_block"}
+    if entry_too_far_from_zone_mid(last_close, zone, atr_value):
+        return {"direction": "HOLD", "reason": "sell_far_from_zone_mid"}
 
     swing_high = safe_float(structure.get("last_swing_high"), safe_float(zone["high"]))
     local_high = safe_float(get_recent_local_high(entry_data, 4), safe_float(zone["high"]))
@@ -2090,6 +2135,12 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         return {"direction": "HOLD", "reason": "no_sell_target"}
     if not enough_room_to_run("SELL", entry, tp2, atr_value):
         return {"direction": "HOLD", "reason": "sell_target_too_close"}
+    if not_enough_remaining_room("SELL", entry, tp2, atr_value):
+        return {"direction": "HOLD", "reason": "sell_not_enough_room_left"}
+    if too_close_to_tp2_after_entry("SELL", entry, tp2, atr_value):
+        return {"direction": "HOLD", "reason": "sell_too_close_to_tp2"}
+    if entry_too_close_to_opposing_pool("SELL", entry, pools, atr_value):
+        return {"direction": "HOLD", "reason": "sell_too_close_to_low_pool"}
 
     rr = (entry - tp2) / max(1e-9, risk)
     if rr < MIN_RR:
@@ -2193,9 +2244,8 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
             "alignment_score": alignment_score,
         },
     }
-# =========================================================
-# TRADE MANAGEMENT
-# =========================================================
+
+
 def trail_stop_suggestion(candles_tf: List[Dict[str, float]], direction: str, atr_value: float) -> float:
     data = candles_tf[-TRAIL_LOOKBACK:] if len(candles_tf) >= TRAIL_LOOKBACK else candles_tf
     buf = atr_value * TRAIL_BUFFER_ATR
@@ -2383,9 +2433,6 @@ async def manage_active_trade(
     return {"signal": trade, "active": True, "actions": actions}
 
 
-# =========================================================
-# TELEGRAM SMART MARKET STATE
-# =========================================================
 async def maybe_emit_market_messages(symbol: str, timeframe: str, context: Dict[str, Any], signal: Dict[str, Any]) -> None:
     state = "INFO"
     if signal.get("direction") in ("BUY", "SELL"):
@@ -2431,9 +2478,6 @@ async def maybe_emit_market_messages(symbol: str, timeframe: str, context: Dict[
         )
 
 
-# =========================================================
-# ANALYZE CORE + ROUTES + WS
-# =========================================================
 async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_telegram: bool = True):
     _reset_daily_if_needed()
 
