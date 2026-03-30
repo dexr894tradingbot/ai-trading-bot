@@ -21,8 +21,17 @@ const TIMEFRAMES = [
   { value: "4h", label: "4h" },
 ];
 
-const LS_KEY_STATE = "dex_bot_ui_state_v8";
-const LS_KEY_HISTORY = "dex_bot_history_v3";
+const LS_KEY_STATE = "dex_bot_ui_state_v9";
+const LS_KEY_HISTORY = "dex_bot_history_v4";
+
+const SIGNAL_STATE_ORDER = {
+  READY: 5,
+  CONFIRMED: 4,
+  WATCH: 3,
+  ACTIVE: 2,
+  HOLD: 1,
+  INVALIDATED: 0,
+};
 
 function safeNum(x, fallback = 0) {
   const n = Number(x);
@@ -62,7 +71,7 @@ function pickModeLabel(sig = {}) {
     sig.mode ||
     sig.type ||
     sig.path ||
-    (sig.bos_level ? "SNIPER" : "") ||
+    (sig.break_level ? "CONFIRMATION" : "") ||
     ""
   );
 }
@@ -85,6 +94,32 @@ function outcomeTone(outcome) {
   if (outcome === "TP2" || outcome === "TP1_ONLY") return "pillWin";
   if (outcome === "SL") return "pillLoss";
   return "";
+}
+
+function getSignalStateLabel(signalState, direction, activeTrade) {
+  if (activeTrade) return "ACTIVE";
+  if (!signalState) {
+    if (direction === "BUY" || direction === "SELL") return "READY";
+    return "HOLD";
+  }
+  return signalState;
+}
+
+function signalStateTone(signalState) {
+  if (signalState === "READY" || signalState === "ACTIVE") return "pillWin";
+  if (signalState === "CONFIRMED") return "fire";
+  if (signalState === "WATCH") return "";
+  if (signalState === "INVALIDATED") return "pillLoss";
+  return "";
+}
+
+function signalStateRank(signalState, activeTrade) {
+  if (activeTrade) return 6;
+  return SIGNAL_STATE_ORDER[signalState] ?? 0;
+}
+
+function boolChip(value, yes = "YES", no = "NO") {
+  return value ? yes : no;
 }
 
 function normalizeAlignment(raw) {
@@ -194,6 +229,7 @@ function normalizeAnalyzeResponse(data) {
     supports,
     resistances,
     direction,
+    signalState: getSignalStateLabel(sig?.signal_state, direction, !!data?.active),
     confidence,
     entry: sig?.entry ?? null,
     sl: sig?.sl ?? null,
@@ -209,6 +245,14 @@ function normalizeAnalyzeResponse(data) {
     qualityGrade: sig?.quality_grade ?? null,
     qualityStars: sig?.quality_stars ?? "",
     qualityScore: safeNum(sig?.quality_score ?? null, null),
+    confirmationScore: safeNum(sig?.confirmation_score ?? null, null),
+    hasSweep: !!sig?.has_sweep,
+    hasStructureBreak: !!sig?.has_structure_break,
+    hasRetest: !!sig?.has_retest,
+    confirmationCandle: !!sig?.confirmation_candle,
+    zoneLow: sig?.zone_low ?? null,
+    zoneHigh: sig?.zone_high ?? null,
+    breakLevel: sig?.break_level ?? null,
     alignment,
     briefing,
     weeklyOutlook,
@@ -217,11 +261,11 @@ function normalizeAnalyzeResponse(data) {
     closedTrade: data?.closed_trade ?? null,
     liveTracker: data?.live_tracker ?? null,
     dailyOutlook: data?.daily_outlook ?? null,
+    state: data?.state ?? "IDLE",
     raw: data,
     maxActive,
   };
 }
-
 function makeHistoryItem({
   symbol,
   timeframe,
@@ -259,6 +303,7 @@ function makeHistoryItem({
     symbol,
     timeframe,
     direction,
+    signalState: signal?.signal_state || "READY",
     confidence: safeNum(signal?.confidence, 0),
     entry,
     sl,
@@ -276,6 +321,15 @@ function makeHistoryItem({
     entryType: pickModeLabel(signal),
     qualityGrade: signal?.quality_grade ?? null,
     qualityStars: signal?.quality_stars ?? "",
+    qualityScore: safeNum(signal?.quality_score ?? null, null),
+    confirmationScore: safeNum(signal?.confirmation_score ?? null, null),
+    hasSweep: !!signal?.has_sweep,
+    hasStructureBreak: !!signal?.has_structure_break,
+    hasRetest: !!signal?.has_retest,
+    confirmationCandle: !!signal?.confirmation_candle,
+    zoneLow: signal?.zone_low ?? null,
+    zoneHigh: signal?.zone_high ?? null,
+    breakLevel: signal?.break_level ?? null,
     weekKey: weekKey ?? null,
     dayKey: dayKey ?? null,
   };
@@ -289,6 +343,7 @@ function normalizeBackendHistoryItem(t = {}) {
     symbol: t.symbol || "—",
     timeframe: t.timeframe || "—",
     direction: t.direction || "HOLD",
+    signalState: t.signal_state || (t.status === "OPEN" ? "ACTIVE" : "HOLD"),
     confidence: safeNum(t.confidence, 0),
     entry: safeNum(t.entry, null),
     sl: safeNum(t.sl, null),
@@ -306,16 +361,27 @@ function normalizeBackendHistoryItem(t = {}) {
     entryType: pickModeLabel(t),
     qualityGrade: t.quality_grade ?? null,
     qualityStars: t.quality_stars ?? "",
+    qualityScore: safeNum(t.quality_score ?? null, null),
+    confirmationScore: safeNum(t.confirmation_score ?? null, null),
+    hasSweep: !!t.has_sweep,
+    hasStructureBreak: !!t.has_structure_break,
+    hasRetest: !!t.has_retest,
+    confirmationCandle: !!t.confirmation_candle,
+    zoneLow: t.zone_low ?? null,
+    zoneHigh: t.zone_high ?? null,
+    breakLevel: t.break_level ?? null,
     weekKey: t.week_key ?? null,
     dayKey: t.day_key ?? null,
   };
 }
+
 function calcPerformance(items) {
-  const closed = items.filter((x) =>
-    x.outcome === "TP2" ||
-    x.outcome === "TP1_ONLY" ||
-    x.outcome === "BE" ||
-    x.outcome === "SL"
+  const closed = items.filter(
+    (x) =>
+      x.outcome === "TP2" ||
+      x.outcome === "TP1_ONLY" ||
+      x.outcome === "BE" ||
+      x.outcome === "SL"
   );
 
   const wins = closed.filter((x) => x.outcome === "TP2" || x.outcome === "TP1_ONLY").length;
@@ -383,11 +449,21 @@ function calcPerformance(items) {
 
 function computeStrength(row) {
   const conf = safeNum(row.confidence, 0);
+  const signalState = row.signal_state || row.signalState || "HOLD";
 
   const actionBonus =
     row.direction === "BUY" || row.direction === "SELL" ? 0.8 : 0.2;
 
   const stateBonus =
+    signalState === "READY"
+      ? 1.6
+      : signalState === "CONFIRMED"
+      ? 1.15
+      : signalState === "WATCH"
+      ? 0.7
+      : 0.1;
+
+  const trendBonus =
     row.market_state === "TRENDING CLEAN"
       ? 1.0
       : row.market_state === "TRENDING PULLBACK"
@@ -403,8 +479,28 @@ function computeStrength(row) {
       ? -0.6
       : 0;
 
-  const confPart = (conf / 100) * 7;
-  const raw = confPart + actionBonus + stateBonus + riskPenalty;
+  const confirmBonus =
+    safeNum(row.confirmation_score, 0) >= 6
+      ? 1.1
+      : safeNum(row.confirmation_score, 0) >= 4
+      ? 0.6
+      : 0;
+
+  const structureBonus = row.has_structure_break ? 0.8 : 0;
+  const retestBonus = row.has_retest ? 0.5 : 0;
+  const sweepBonus = row.has_sweep ? 0.35 : 0;
+
+  const confPart = (conf / 100) * 6.5;
+  const raw =
+    confPart +
+    actionBonus +
+    stateBonus +
+    trendBonus +
+    confirmBonus +
+    structureBonus +
+    retestBonus +
+    sweepBonus +
+    riskPenalty;
 
   return clamp(raw, 0, 10);
 }
@@ -425,6 +521,12 @@ function buildAiExplanation({
   confirmationNeeded,
   liquidityAbove,
   liquidityBelow,
+  signalState,
+  confirmationScore,
+  hasSweep,
+  hasStructureBreak,
+  hasRetest,
+  breakLevel,
 }) {
   const lines = [];
 
@@ -432,10 +534,20 @@ function buildAiExplanation({
   lines.push(`Structure is ${structure || "-"}.`);
   lines.push(`Market state is ${marketState || "-"}.`);
 
+  if (signalState && signalState !== "-") lines.push(`Current signal state is ${signalState}.`);
   if (reversalRisk && reversalRisk !== "-") lines.push(`Reversal risk is ${reversalRisk}.`);
   if (areaOfInterest && areaOfInterest !== "-") lines.push(`Main area of interest is ${areaOfInterest}.`);
   if (preferredSetup && preferredSetup !== "-") lines.push(`Preferred setup: ${preferredSetup}.`);
   if (confirmationNeeded && confirmationNeeded !== "-") lines.push(`Confirmation needed: ${confirmationNeeded}.`);
+  if (confirmationScore !== null && confirmationScore !== undefined) {
+    lines.push(`Confirmation score is ${confirmationScore}.`);
+  }
+  if (hasSweep) lines.push(`Liquidity sweep is already detected.`);
+  if (hasStructureBreak) lines.push(`Structure break is confirmed.`);
+  if (hasRetest) lines.push(`Retest is confirmed.`);
+  if (breakLevel !== null && breakLevel !== undefined) {
+    lines.push(`Break level is near ${fmt(breakLevel)}.`);
+  }
   if (liquidityAbove && liquidityAbove !== "-") lines.push(`Liquidity above sits near ${liquidityAbove}.`);
   if (liquidityBelow && liquidityBelow !== "-") lines.push(`Liquidity below sits near ${liquidityBelow}.`);
 
@@ -475,7 +587,6 @@ function getBestMarketFromHistory(items) {
   }
   return best;
 }
-
 function getScannerSmartLabel(row = {}, idx = 0) {
   const conf = safeNum(row.confidence, 0);
   const active = !!row.active_trade;
@@ -483,11 +594,16 @@ function getScannerSmartLabel(row = {}, idx = 0) {
   const state = row.market_state || "";
   const risk = row.reversal_risk || "";
   const quality = row.quality_grade || "";
+  const signalState = row.signal_state || row.signalState || "HOLD";
+  const confirmScore = safeNum(row.confirmation_score, 0);
 
   if (active) return { text: "LIVE TRADE", tone: "pillWin" };
-  if ((direction === "BUY" || direction === "SELL") && idx === 0 && conf >= 75) {
+  if (signalState === "READY" && idx === 0 && conf >= 75) {
     return { text: "TOP PICK", tone: "fire" };
   }
+  if (signalState === "READY") return { text: "READY", tone: "pillWin" };
+  if (signalState === "CONFIRMED") return { text: "CONFIRMED", tone: "fire" };
+  if (signalState === "WATCH" && confirmScore >= 4) return { text: "WATCH+", tone: "" };
   if (quality === "A+" || quality === "A") return { text: "PREMIUM", tone: "pillWin" };
   if (state === "TRENDING CLEAN" && conf >= 70) return { text: "TREND CLEAN", tone: "pillWin" };
   if (state === "TRENDING PULLBACK" && conf >= 60) return { text: "PULLBACK", tone: "" };
@@ -507,7 +623,9 @@ function buildAiSentimentModel({
   maxActiveTotal = 5,
 }) {
   const tradable = ranked.filter(
-    (r) => (r.direction === "BUY" || r.direction === "SELL") && safeNum(r.confidence, 0) > 0
+    (r) =>
+      (r.direction === "BUY" || r.direction === "SELL") &&
+      ["READY", "CONFIRMED", "WATCH"].includes(r.signal_state || r.signalState || "HOLD")
   );
 
   let score = 50;
@@ -530,10 +648,13 @@ function buildAiSentimentModel({
     else score -= 3;
   }
 
-  if (tradable.length >= 3) score += 8;
-  else if (tradable.length === 2) score += 5;
-  else if (tradable.length === 1) score += 2;
-  else score -= 8;
+  const readyCount = tradable.filter((r) => (r.signal_state || r.signalState) === "READY").length;
+  const confirmedCount = tradable.filter((r) => (r.signal_state || r.signalState) === "CONFIRMED").length;
+
+  if (readyCount >= 2) score += 10;
+  else if (readyCount === 1) score += 6;
+  else if (confirmedCount >= 2) score += 5;
+  else if (tradable.length === 0) score -= 8;
 
   if (activeTotal >= maxActiveTotal) score -= 5;
 
@@ -551,7 +672,7 @@ function buildAiSentimentModel({
 
   const summary =
     sentiment === "BULLISH / FAVORABLE"
-      ? "Conditions are supportive for selective setups."
+      ? "Conditions are supportive for selective, confirmation-based setups."
       : sentiment === "DEFENSIVE / CAUTION"
       ? "Market quality is weak. Protection matters more than aggression."
       : "Mixed conditions. Best to stay selective and wait for clean confirmation.";
@@ -561,6 +682,8 @@ function buildAiSentimentModel({
     sentiment,
     tone,
     tradableCount: tradable.length,
+    readyCount,
+    confirmedCount,
     summary,
   };
 }
@@ -571,8 +694,8 @@ function buildCommandCenter(activeTrade, liveTracker, price) {
       title: "No active trade",
       statusTone: "",
       checklist: [
-        "Wait for a clean scanner signal.",
-        "Use high-quality setups only.",
+        "Wait for a clean READY setup.",
+        "Use WATCH and CONFIRMED states as preparation, not execution.",
         "Avoid forcing entries in weak conditions.",
       ],
       stats: [],
@@ -604,7 +727,7 @@ function buildCommandCenter(activeTrade, liveTracker, price) {
   }
 
   if (progress >= 75) checklist.push("Trade is in strong progress territory.");
-  else if (progress >= 40) checklist.push("Trade is moving, but still needs confirmation follow-through.");
+  else if (progress >= 40) checklist.push("Trade is moving, but still needs follow-through.");
   else checklist.push("Trade is early. Stay patient and let structure develop.");
 
   if (liveTracker?.status) checklist.push(`Live status: ${liveTracker.status}.`);
@@ -624,6 +747,34 @@ function buildCommandCenter(activeTrade, liveTracker, price) {
       { label: "TP1", value: activeTrade.tp1_hit ? "Hit ✅" : tp1 === null ? "—" : fmt(tp1) },
     ],
   };
+}
+
+function compareScannerRows(a, b) {
+  const aState = signalStateRank(a.signal_state || a.signalState, !!a.active_trade);
+  const bState = signalStateRank(b.signal_state || b.signalState, !!b.active_trade);
+  if (bState !== aState) return bState - aState;
+
+  const aConf = safeNum(a.confidence, 0);
+  const bConf = safeNum(b.confidence, 0);
+  if (bConf !== aConf) return bConf - aConf;
+
+  const aConfirm = safeNum(a.confirmation_score, 0);
+  const bConfirm = safeNum(b.confirmation_score, 0);
+  if (bConfirm !== aConfirm) return bConfirm - aConfirm;
+
+  const aTrend = a.market_state === "TRENDING CLEAN" ? 1 : 0;
+  const bTrend = b.market_state === "TRENDING CLEAN" ? 1 : 0;
+  if (bTrend !== aTrend) return bTrend - aTrend;
+
+  return 0;
+}
+
+function getTopPick(ranked = []) {
+  const candidates = ranked
+    .filter((r) => (r.direction === "BUY" || r.direction === "SELL"))
+    .sort(compareScannerRows);
+
+  return candidates[0] || null;
 }
 
 function CollapsibleCard({
@@ -674,7 +825,6 @@ function CollapsibleCard({
     </div>
   );
 }
-
 export default function Dashboard() {
   const restored = useMemo(() => {
     try {
@@ -696,6 +846,8 @@ export default function Dashboard() {
   const [resistances, setResistances] = useState(restored?.resistances || []);
 
   const [direction, setDirection] = useState(restored?.direction || "HOLD");
+  const [signalState, setSignalState] = useState(restored?.signalState || "HOLD");
+  const [engineState, setEngineState] = useState(restored?.engineState || "IDLE");
   const [confidence, setConfidence] = useState(restored?.confidence || 0);
   const [entry, setEntry] = useState(restored?.entry ?? null);
   const [sl, setSl] = useState(restored?.sl ?? null);
@@ -709,6 +861,15 @@ export default function Dashboard() {
   const [qualityGrade, setQualityGrade] = useState(restored?.qualityGrade || null);
   const [qualityStars, setQualityStars] = useState(restored?.qualityStars || "");
   const [qualityScore, setQualityScore] = useState(restored?.qualityScore ?? null);
+
+  const [confirmationScore, setConfirmationScore] = useState(restored?.confirmationScore ?? null);
+  const [hasSweep, setHasSweep] = useState(restored?.hasSweep ?? false);
+  const [hasStructureBreak, setHasStructureBreak] = useState(restored?.hasStructureBreak ?? false);
+  const [hasRetest, setHasRetest] = useState(restored?.hasRetest ?? false);
+  const [confirmationCandle, setConfirmationCandle] = useState(restored?.confirmationCandle ?? false);
+  const [zoneLow, setZoneLow] = useState(restored?.zoneLow ?? null);
+  const [zoneHigh, setZoneHigh] = useState(restored?.zoneHigh ?? null);
+  const [breakLevel, setBreakLevel] = useState(restored?.breakLevel ?? null);
 
   const [alignmentScore, setAlignmentScore] = useState(restored?.alignmentScore ?? null);
   const [alignmentLabel, setAlignmentLabel] = useState(restored?.alignmentLabel ?? null);
@@ -791,7 +952,8 @@ export default function Dashboard() {
   }, []);
 
   const performance = useMemo(() => calcPerformance(history), [history]);
-   const symbolsList = useMemo(
+
+  const symbolsList = useMemo(
     () => VOLATILITY_OPTIONS.filter((v) => v.symbol !== "ALL").map((v) => v.symbol),
     []
   );
@@ -807,17 +969,33 @@ export default function Dashboard() {
           symbol: activeTrade.symbol,
           direction: activeTrade.direction,
           confidence: activeTrade.confidence,
+          signal_state: activeTrade.signal_state || "ACTIVE",
           active_trade: true,
           market_state: marketState,
           preferred_setup: preferredSetup,
           quality_grade: activeTrade.quality_grade || qualityGrade,
           quality_stars: activeTrade.quality_stars || qualityStars,
+          confirmation_score: activeTrade.confirmation_score ?? confirmationScore,
+          has_sweep: activeTrade.has_sweep ?? hasSweep,
+          has_structure_break: activeTrade.has_structure_break ?? hasStructureBreak,
+          has_retest: activeTrade.has_retest ?? hasRetest,
         },
         ...rows,
       ];
     }
     return rows;
-  }, [ranked, activeTrade, marketState, preferredSetup, qualityGrade, qualityStars]);
+  }, [
+    ranked,
+    activeTrade,
+    marketState,
+    preferredSetup,
+    qualityGrade,
+    qualityStars,
+    confirmationScore,
+    hasSweep,
+    hasStructureBreak,
+    hasRetest,
+  ]);
 
   const aiExplanation = useMemo(
     () =>
@@ -831,6 +1009,12 @@ export default function Dashboard() {
         confirmationNeeded,
         liquidityAbove,
         liquidityBelow,
+        signalState,
+        confirmationScore,
+        hasSweep,
+        hasStructureBreak,
+        hasRetest,
+        breakLevel,
       }),
     [
       bias,
@@ -842,6 +1026,12 @@ export default function Dashboard() {
       confirmationNeeded,
       liquidityAbove,
       liquidityBelow,
+      signalState,
+      confirmationScore,
+      hasSweep,
+      hasStructureBreak,
+      hasRetest,
+      breakLevel,
     ]
   );
 
@@ -905,8 +1095,7 @@ export default function Dashboard() {
     () => buildCommandCenter(activeTrade, liveTracker, price),
     [activeTrade, liveTracker, price]
   );
-
-  const analyzeBusyRef = useRef(false);
+   const analyzeBusyRef = useRef(false);
   const scanBusyRef = useRef(false);
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
@@ -926,6 +1115,8 @@ export default function Dashboard() {
           supports,
           resistances,
           direction,
+          signalState,
+          engineState,
           confidence,
           entry,
           sl,
@@ -938,6 +1129,14 @@ export default function Dashboard() {
           qualityGrade,
           qualityStars,
           qualityScore,
+          confirmationScore,
+          hasSweep,
+          hasStructureBreak,
+          hasRetest,
+          confirmationCandle,
+          zoneLow,
+          zoneHigh,
+          breakLevel,
           alignmentScore,
           alignmentLabel,
           alignmentDetails,
@@ -990,6 +1189,8 @@ export default function Dashboard() {
     supports,
     resistances,
     direction,
+    signalState,
+    engineState,
     confidence,
     entry,
     sl,
@@ -1002,6 +1203,14 @@ export default function Dashboard() {
     qualityGrade,
     qualityStars,
     qualityScore,
+    confirmationScore,
+    hasSweep,
+    hasStructureBreak,
+    hasRetest,
+    confirmationCandle,
+    zoneLow,
+    zoneHigh,
+    breakLevel,
     alignmentScore,
     alignmentLabel,
     alignmentDetails,
@@ -1071,6 +1280,8 @@ export default function Dashboard() {
     setResistances([]);
     setPrice(null);
     setDirection("HOLD");
+    setSignalState("HOLD");
+    setEngineState("IDLE");
     setConfidence(0);
     setEntry(null);
     setSl(null);
@@ -1082,6 +1293,14 @@ export default function Dashboard() {
     setQualityGrade(null);
     setQualityStars("");
     setQualityScore(null);
+    setConfirmationScore(null);
+    setHasSweep(false);
+    setHasStructureBreak(false);
+    setHasRetest(false);
+    setConfirmationCandle(false);
+    setZoneLow(null);
+    setZoneHigh(null);
+    setBreakLevel(null);
     setAlignmentScore(null);
     setAlignmentLabel(null);
     setAlignmentDetails([]);
@@ -1110,19 +1329,7 @@ export default function Dashboard() {
     setError("");
   }, [selectedSymbol, timeframe]);
 
-  const topPick = useMemo(() => {
-    if (!ranked?.length) return null;
-    const candidates = ranked
-      .filter((r) => (r.direction === "BUY" || r.direction === "SELL") && safeNum(r.confidence, 0) > 0)
-      .sort((a, b) => {
-        const ac = safeNum(a.confidence, 0);
-        const bc = safeNum(b.confidence, 0);
-        if (bc !== ac) return bc - ac;
-        return (b.market_state === "TRENDING CLEAN") - (a.market_state === "TRENDING CLEAN");
-      });
-
-    return candidates[0] || null;
-  }, [ranked]);
+  const topPick = useMemo(() => getTopPick(ranked), [ranked]);
 
   const currentAlignmentChip =
     alignmentScore !== null
@@ -1142,6 +1349,8 @@ export default function Dashboard() {
       : reversalRisk === "HIGH"
       ? "pillLoss"
       : "";
+
+  const signalStateBadgeTone = signalStateTone(signalState);
 
   const weeklyWinTone =
     safeNum(weeklyOutlook?.winRate, 0) >= 60
@@ -1171,6 +1380,8 @@ export default function Dashboard() {
         setResistances(norm.resistances);
 
         setDirection(norm.direction || "HOLD");
+        setSignalState(norm.signalState || "HOLD");
+        setEngineState(norm.state || "IDLE");
         setConfidence(safeNum(norm.confidence, 0));
         setEntry(norm.entry ?? null);
         setSl(norm.sl ?? null);
@@ -1181,6 +1392,14 @@ export default function Dashboard() {
         setQualityGrade(norm.qualityGrade ?? null);
         setQualityStars(norm.qualityStars ?? "");
         setQualityScore(norm.qualityScore ?? null);
+        setConfirmationScore(norm.confirmationScore ?? null);
+        setHasSweep(!!norm.hasSweep);
+        setHasStructureBreak(!!norm.hasStructureBreak);
+        setHasRetest(!!norm.hasRetest);
+        setConfirmationCandle(!!norm.confirmationCandle);
+        setZoneLow(norm.zoneLow ?? null);
+        setZoneHigh(norm.zoneHigh ?? null);
+        setBreakLevel(norm.breakLevel ?? null);
 
         if (norm.price !== null && norm.price !== undefined) setPrice(norm.price);
 
@@ -1222,6 +1441,7 @@ export default function Dashboard() {
             symbol,
             timeframe: tf,
             ...norm.raw.signal,
+            signal_state: norm.signalState || norm.raw?.signal?.signal_state || "ACTIVE",
             actions: norm.actions || [],
             price: norm.price ?? null,
             alignment: norm.alignment || null,
@@ -1231,9 +1451,8 @@ export default function Dashboard() {
             if (prev?.symbol === symbol && prev?.timeframe === tf) return null;
             return prev;
           });
-        }
-
-        if (norm.active && norm.raw?.signal?.opened_at) {
+        } 
+         if (norm.active && norm.raw?.signal?.opened_at) {
           const openedAt = norm.raw.signal.opened_at;
 
           const alreadyOpen =
@@ -1340,7 +1559,8 @@ export default function Dashboard() {
       }
     },
     [dailyR, activeTotal, maxActiveTotal]
-  ); 
+  );
+
   const syncGlobalState = useCallback(async () => {
     try {
       const data = await withTimeout(fetchGlobalState(150), 12000, "Global state");
@@ -1362,12 +1582,18 @@ export default function Dashboard() {
         const activeRows = activeTrades.map((t) => ({
           symbol: t.symbol,
           direction: t.direction || "HOLD",
+          signal_state: t.signal_state || "ACTIVE",
           confidence: safeNum(t.confidence, 0),
           active_trade: true,
           market_state: t?.meta?.market_state || null,
           preferred_setup: t?.meta?.preferred_setup || t?.mode || t?.entry_type || null,
           quality_grade: t.quality_grade || null,
           quality_stars: t.quality_stars || "",
+          quality_score: safeNum(t.quality_score ?? null, null),
+          confirmation_score: safeNum(t.confirmation_score ?? null, null),
+          has_sweep: !!t.has_sweep,
+          has_structure_break: !!t.has_structure_break,
+          has_retest: !!t.has_retest,
           entry: t.entry ?? null,
           sl: t.sl ?? null,
           tp: t.tp2 ?? t.tp ?? null,
@@ -1382,12 +1608,14 @@ export default function Dashboard() {
           const merged = [...activeRows, ...nonActive];
 
           const seen = new Set();
-          return merged.filter((r) => {
-            const key = `${r.symbol}-${r.entry_type || ""}-${r.active_trade ? "A" : "N"}`;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-          });
+          return merged
+            .filter((r) => {
+              const key = `${r.symbol}-${r.entry_type || ""}-${r.active_trade ? "A" : "N"}-${r.signal_state || "HOLD"}`;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            })
+            .sort(compareScannerRows);
         });
 
         const selectedActive = activeTrades.find(
@@ -1425,8 +1653,7 @@ export default function Dashboard() {
     } catch (e) {
       console.error("Global state sync failed:", e);
     }
-  }, [selectedSymbol, timeframe, price]);
-
+  }, [selectedSymbol, timeframe, price]);   
   useEffect(() => {
     syncGlobalState();
 
@@ -1450,12 +1677,7 @@ export default function Dashboard() {
       const data = await withTimeout(scanMarkets(symbolsList, timeframe), 15000, "Scan");
       const newRanked = Array.isArray(data?.ranked) ? data.ranked : Array.isArray(data) ? data : [];
 
-      newRanked.sort((a, b) => {
-        const ac = safeNum(a.confidence, 0);
-        const bc = safeNum(b.confidence, 0);
-        if (bc !== ac) return bc - ac;
-        return (b.market_state === "TRENDING CLEAN") - (a.market_state === "TRENDING CLEAN");
-      });
+      newRanked.sort(compareScannerRows);
 
       setRanked(newRanked);
       setDailyOutlook(data?.daily_outlook || null);
@@ -1475,9 +1697,9 @@ export default function Dashboard() {
       }
 
       if (autoPickOn) {
-        const best = newRanked
-          .filter((r) => (r.direction === "BUY" || r.direction === "SELL") && safeNum(r.confidence, 0) > 0)
-          .sort((a, b) => safeNum(b.confidence, 0) - safeNum(a.confidence, 0))[0];
+        const best = [...newRanked]
+          .filter((r) => (r.direction === "BUY" || r.direction === "SELL"))
+          .sort(compareScannerRows)[0];
 
         if (best?.symbol) {
           if (best.symbol !== selectedSymbol) setSelectedSymbol(best.symbol);
@@ -1550,6 +1772,9 @@ export default function Dashboard() {
               setLiveTracker(msg?.live_tracker || null);
               if (msg?.weekly_outlook) {
                 setWeeklyOutlook(normalizeWeeklyOutlook(msg.weekly_outlook));
+              }
+              if (msg?.state) {
+                setEngineState(msg.state);
               }
 
               lastLiveAtRef.current = Date.now();
@@ -1650,21 +1875,24 @@ export default function Dashboard() {
   const activeAlignmentChip =
     activeTrade?.alignment?.score !== undefined && activeTrade?.alignment?.score !== null
       ? `${activeTrade?.alignment?.label ? `${activeTrade.alignment.label} ` : ""}${Math.round(activeTrade.alignment.score)}%`
-      : null;
-
+      : null;    
   return (
     <div className="layout">
       <div className="card topCard">
         <div className="topRow">
           <div>
             <div className="title">DEXTRADEZBOT AI</div>
-            <div className="subtitle">Market Intelligence • Liquidity Mapping • Selective Trade Ideas</div>
+            <div className="subtitle">Market Intelligence • Liquidity Mapping • Selective Confirmation Trade Ideas</div>
           </div>
 
           <div className="badges">
             <span className={`badge ${status === "LIVE" ? "live" : ""}`}>
               {status === "SCANNING" ? <span className="scanning">SCANNING</span> : status}
             </span>
+            <span className={`badge ${signalStateBadgeTone}`}>
+              Signal: {signalState}
+            </span>
+            <span className="badge">Engine: {engineState}</span>
             <span className="badge">Daily R: {dailyR}</span>
             <span className="badge">Active: {activeTotal}/{maxActiveTotal}</span>
             <span className="badge">Price: {price === null || price === undefined ? "—" : String(price)}</span>
@@ -1677,6 +1905,9 @@ export default function Dashboard() {
               <span className="pill fire">🟢 ACTIVE</span>
               <span className="mono">{activeTrade.symbol} • {activeTrade.timeframe}</span>
               <span className="pill">{activeTrade.direction}</span>
+              <span className={`pill ${signalStateTone(activeTrade.signal_state || "ACTIVE")}`}>
+                {activeTrade.signal_state || "ACTIVE"}
+              </span>
               <span className="pill">Conf {safeNum(activeTrade.confidence, 0)}%</span>
               <span className="pill">
                 Quality {qualityText(activeTrade.quality_grade || qualityGrade, activeTrade.quality_stars || qualityStars)}
@@ -1695,6 +1926,16 @@ export default function Dashboard() {
               </div>
 
               <button className="btn small" onClick={() => setSelectedSymbol(activeTrade.symbol)}>Select</button>
+            </div>
+
+            <div className="activeActions" style={{ marginTop: 10 }}>
+              <div className="miniLabel">Confirmation Model</div>
+              <div className="actionsList">
+                <div className="actionChip"><span className="mono">Score: {safeNum(activeTrade.confirmation_score, 0)}</span></div>
+                <div className="actionChip"><span className="mono">Sweep: {boolChip(!!activeTrade.has_sweep)}</span></div>
+                <div className="actionChip"><span className="mono">Structure Break: {boolChip(!!activeTrade.has_structure_break)}</span></div>
+                <div className="actionChip"><span className="mono">Retest: {boolChip(!!activeTrade.has_retest)}</span></div>
+              </div>
             </div>
 
             {liveTracker ? (
@@ -1891,11 +2132,12 @@ export default function Dashboard() {
         <div className="signalLine"><span className="smallText">AI Sentiment</span><strong>{aiSentiment.sentiment}</strong></div>
         <div className="signalLine"><span className="smallText">Sentiment Score</span><strong>{aiSentiment.score}/100</strong></div>
         <div className="signalLine"><span className="smallText">Tradable Markets</span><strong>{aiSentiment.tradableCount}</strong></div>
+        <div className="signalLine"><span className="smallText">READY Setups</span><strong>{aiSentiment.readyCount}</strong></div>
+        <div className="signalLine"><span className="smallText">CONFIRMED Setups</span><strong>{aiSentiment.confirmedCount}</strong></div>
         <div className="signalLine"><span className="smallText">Current Bias</span><strong>{bias}</strong></div>
         <div className="signalLine"><span className="smallText">Current State</span><strong>{marketState}</strong></div>
         <div className="reason"><span className="smallText"><b>AI Summary:</b> {aiSentiment.summary}</span></div>
       </CollapsibleCard>
-
       <CollapsibleCard
         title="Open Trades"
         className="openTradesCard"
@@ -1909,9 +2151,15 @@ export default function Dashboard() {
               <div key={`${m.symbol}-${idx}`} className="actionChip" style={{ padding: 10 }}>
                 <span className="mono">{m.symbol}</span>
                 <span className="mono">{m.direction || "-"}</span>
+                <span className={`pill ${signalStateTone(m.signal_state || "ACTIVE")}`}>
+                  {m.signal_state || "ACTIVE"}
+                </span>
                 <span className="mono">Conf {safeNum(m.confidence, 0)}%</span>
                 <span className="mono">{qualityText(m.quality_grade, m.quality_stars)}</span>
                 {m.market_state ? <span className="mono">{m.market_state}</span> : null}
+                {m.confirmation_score !== undefined && m.confirmation_score !== null ? (
+                  <span className="mono">Score {safeNum(m.confirmation_score, 0)}</span>
+                ) : null}
                 <button className="btn small" onClick={() => setSelectedSymbol(m.symbol)}>Select</button>
               </div>
             ))}
@@ -1950,6 +2198,7 @@ export default function Dashboard() {
           </div>
         </div>
       </CollapsibleCard>
+
       {topPick ? (
         <CollapsibleCard
           title="Top Pick"
@@ -1963,10 +2212,16 @@ export default function Dashboard() {
               <span className="pill fire">🔥 TOP</span>
               <span className="mono">{topPick.symbol}</span>
               <span className="pill">{topPick.direction}</span>
+              <span className={`pill ${signalStateTone(topPick.signal_state || "HOLD")}`}>
+                {topPick.signal_state || "HOLD"}
+              </span>
               <span className="pill">Conf {safeNum(topPick.confidence, 0)}%</span>
               <span className="pill">Quality {qualityText(topPick.quality_grade, topPick.quality_stars)}</span>
               {topPick.market_state ? <span className="pill">{topPick.market_state}</span> : null}
               {topPick.preferred_setup ? <span className="pill">{topPick.preferred_setup}</span> : null}
+              {topPick.confirmation_score !== undefined && topPick.confirmation_score !== null ? (
+                <span className="pill">Score {safeNum(topPick.confirmation_score, 0)}</span>
+              ) : null}
               <span className="pill">
                 Strength {renderStrengthBar(computeStrength(topPick))} {computeStrength(topPick).toFixed(1)} / 10
               </span>
@@ -1984,7 +2239,11 @@ export default function Dashboard() {
           className="chartCard"
           isOpen={openSections.chart}
           onToggle={() => toggleSection("chart")}
-          right={<div className="tiny">Candles: {candles?.length || 0} • S: {supports?.length || 0} • R: {resistances?.length || 0}</div>}
+          right={
+            <div className="tiny">
+              Candles: {candles?.length || 0} • S: {supports?.length || 0} • R: {resistances?.length || 0}
+            </div>
+          }
         >
           <div className="chartWrap">
             {selectedSymbol === "ALL" ? (
@@ -2014,6 +2273,10 @@ export default function Dashboard() {
                 tp={tp}
                 tp1={tp1}
                 tp2={tp2}
+                zoneLow={zoneLow}
+                zoneHigh={zoneHigh}
+                breakLevel={breakLevel}
+                signalState={signalState}
               />
             )}
           </div>
@@ -2051,6 +2314,10 @@ export default function Dashboard() {
           <hr style={{ opacity: 0.15, margin: "14px 0" }} />
 
           <div className="signalLine"><span className="smallText">Signal Direction</span><strong>{direction}</strong></div>
+          <div className="signalLine">
+            <span className="smallText">Signal State</span>
+            <strong><span className={`pill ${signalStateBadgeTone}`}>{signalState}</span></strong>
+          </div>
           <div className="signalLine"><span className="smallText">Confidence</span><strong>{confidence}%</strong></div>
           <div className="signalLine"><span className="smallText">Signal Quality</span><strong>{qualityText(qualityGrade, qualityStars)}</strong></div>
           <div className="signalLine"><span className="smallText">Entry Type</span><strong>{entryType || "—"}</strong></div>
@@ -2079,6 +2346,14 @@ export default function Dashboard() {
           <div className="signalLine"><span className="smallText">SL</span><strong>{sl ?? "-"}</strong></div>
           <div className="signalLine"><span className="smallText">TP1</span><strong>{tp1 ?? "-"}</strong></div>
           <div className="signalLine"><span className="smallText">TP2</span><strong>{tp2 ?? "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">Zone Low</span><strong>{zoneLow ?? "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">Zone High</span><strong>{zoneHigh ?? "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">Break Level</span><strong>{breakLevel ?? "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">Confirmation Score</span><strong>{confirmationScore ?? "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">Sweep</span><strong>{boolChip(hasSweep)}</strong></div>
+          <div className="signalLine"><span className="smallText">Structure Break</span><strong>{boolChip(hasStructureBreak)}</strong></div>
+          <div className="signalLine"><span className="smallText">Retest</span><strong>{boolChip(hasRetest)}</strong></div>
+          <div className="signalLine"><span className="smallText">Confirmation Candle</span><strong>{boolChip(confirmationCandle)}</strong></div>
           <div className="signalLine"><span className="smallText">TP1 R:R</span><strong>{tp1Multiple === null ? "—" : tp1Multiple.toFixed(2)}</strong></div>
           <div className="signalLine"><span className="smallText">TP2 R:R</span><strong>{rrMultiple === null ? "—" : rrMultiple.toFixed(2)}</strong></div>
 
@@ -2104,9 +2379,8 @@ export default function Dashboard() {
             </div>
           ) : null}
         </CollapsibleCard>
-      </div>
-
-      <CollapsibleCard
+      </div>      
+       <CollapsibleCard
         title="Risk Calculator"
         className="riskCard"
         isOpen={openSections.riskCalculator}
@@ -2147,13 +2421,18 @@ export default function Dashboard() {
               <tr>
                 <th>Market</th>
                 <th>Smart Label</th>
+                <th>Signal State</th>
                 <th>Bias</th>
                 <th>State</th>
                 <th>Risk</th>
                 <th>Action</th>
                 <th>Conf</th>
+                <th>Confirm Score</th>
                 <th>Quality</th>
                 <th>Strength</th>
+                <th>Sweep</th>
+                <th>BOS</th>
+                <th>Retest</th>
                 <th>AOI</th>
                 <th>Setup</th>
                 <th>Entry</th>
@@ -2166,7 +2445,7 @@ export default function Dashboard() {
                   const isHot =
                     idx === 0 &&
                     (r.direction === "BUY" || r.direction === "SELL") &&
-                    safeNum(r.confidence, 0) > 0;
+                    signalStateRank(r.signal_state || r.signalState, !!r.active_trade) >= 4;
 
                   const smartLabel = getScannerSmartLabel(r, idx);
 
@@ -2177,11 +2456,13 @@ export default function Dashboard() {
                         {r.active_trade ? <span className="pill pillWin" style={{ marginLeft: 6 }}>ACTIVE</span> : null}
                       </td>
                       <td><span className={`pill ${smartLabel.tone}`}>{smartLabel.text}</span></td>
+                      <td><span className={`pill ${signalStateTone(r.signal_state || r.signalState || "HOLD")}`}>{r.signal_state || r.signalState || "HOLD"}</span></td>
                       <td>{r.bias ?? "—"}</td>
                       <td className="notes">{r.market_state ?? "—"}</td>
                       <td>{r.reversal_risk ?? "—"}</td>
                       <td>{r.direction ?? "—"}</td>
                       <td>{safeNum(r.confidence, 0)}%</td>
+                      <td>{r.confirmation_score ?? "—"}</td>
                       <td>{qualityText(r.quality_grade, r.quality_stars)}</td>
                       <td className="mono">
                         {(() => {
@@ -2189,6 +2470,9 @@ export default function Dashboard() {
                           return `${renderStrengthBar(s)} ${s.toFixed(1)} / 10`;
                         })()}
                       </td>
+                      <td>{boolChip(!!r.has_sweep)}</td>
+                      <td>{boolChip(!!r.has_structure_break)}</td>
+                      <td>{boolChip(!!r.has_retest)}</td>
                       <td className="notes">{r.area_of_interest ?? "—"}</td>
                       <td className="notes">{r.preferred_setup ?? r.entry_type ?? "—"}</td>
                       <td>{r.entry ?? "-"}</td>
@@ -2197,7 +2481,7 @@ export default function Dashboard() {
                   );
                 })
               ) : (
-                <tr><td colSpan="13" className="emptyRow">No markets load yet. Scan markets or wait for sync.</td></tr>
+                <tr><td colSpan="18" className="emptyRow">No markets loaded yet. Scan markets or wait for sync.</td></tr>
               )}
             </tbody>
           </table>
@@ -2244,9 +2528,11 @@ export default function Dashboard() {
                   <th>Market</th>
                   <th>TF</th>
                   <th>Dir</th>
+                  <th>Signal State</th>
                   <th>Mode</th>
                   <th>Quality</th>
                   <th>Conf</th>
+                  <th>Confirm Score</th>
                   <th>Entry</th>
                   <th>SL</th>
                   <th>TP1</th>
@@ -2272,9 +2558,11 @@ export default function Dashboard() {
                       <td className="mono">{t.symbol}</td>
                       <td>{t.timeframe}</td>
                       <td>{t.direction}</td>
+                      <td><span className={`pill ${signalStateTone(t.signalState || "HOLD")}`}>{t.signalState || "HOLD"}</span></td>
                       <td>{t.entryType || "—"}</td>
                       <td>{qualityText(t.qualityGrade, t.qualityStars)}</td>
                       <td>{safeNum(t.confidence, 0)}%</td>
+                      <td>{t.confirmationScore ?? "—"}</td>
                       <td>{fmt(t.entry)}</td>
                       <td>{fmt(t.sl)}</td>
                       <td>{fmt(t.tp1)}</td>
@@ -2298,17 +2586,17 @@ export default function Dashboard() {
                     </tr>
                   ))
                 ) : (
-                  <tr><td colSpan="13" className="emptyRow">No history yet.</td></tr>
+                  <tr><td colSpan="15" className="emptyRow">No history yet.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
 
           <div className="tiny note">
-            Note: TP1-only closes now count as wins, breakeven stays neutral, and weekly stats should keep climbing through the week instead of waiting until the end.
+            Note: TP1-only closes count as wins, breakeven stays neutral, and the upgraded bot now separates WATCH, CONFIRMED, and READY states before execution.
           </div>
         </CollapsibleCard>
       ) : null}
     </div>
   );
-}
+}     
