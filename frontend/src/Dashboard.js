@@ -21,8 +21,8 @@ const TIMEFRAMES = [
   { value: "4h", label: "4h" },
 ];
 
-const LS_KEY_STATE = "dex_bot_ui_state_v9";
-const LS_KEY_HISTORY = "dex_bot_history_v4";
+const LS_KEY_STATE = "dex_bot_ui_state_v10";
+const LS_KEY_HISTORY = "dex_bot_history_v5";
 
 const SIGNAL_STATE_ORDER = {
   READY: 5,
@@ -266,6 +266,7 @@ function normalizeAnalyzeResponse(data) {
     maxActive,
   };
 }
+
 function makeHistoryItem({
   symbol,
   timeframe,
@@ -374,7 +375,6 @@ function normalizeBackendHistoryItem(t = {}) {
     dayKey: t.day_key ?? null,
   };
 }
-
 function calcPerformance(items) {
   const closed = items.filter(
     (x) =>
@@ -587,6 +587,7 @@ function getBestMarketFromHistory(items) {
   }
   return best;
 }
+
 function getScannerSmartLabel(row = {}, idx = 0) {
   const conf = safeNum(row.confidence, 0);
   const active = !!row.active_trade;
@@ -1095,7 +1096,8 @@ export default function Dashboard() {
     () => buildCommandCenter(activeTrade, liveTracker, price),
     [activeTrade, liveTracker, price]
   );
-   const analyzeBusyRef = useRef(false);
+
+  const analyzeBusyRef = useRef(false);
   const scanBusyRef = useRef(false);
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
@@ -1358,7 +1360,6 @@ export default function Dashboard() {
       : safeNum(weeklyOutlook?.winRate, 0) <= 40 && safeNum(weeklyOutlook?.totalClosed, 0) > 0
       ? "pillLoss"
       : "";
-
   const runAnalyze = useCallback(
     async (symbol, tf) => {
       if (symbol === "ALL") return null;
@@ -1451,8 +1452,9 @@ export default function Dashboard() {
             if (prev?.symbol === symbol && prev?.timeframe === tf) return null;
             return prev;
           });
-        } 
-         if (norm.active && norm.raw?.signal?.opened_at) {
+        }
+
+        if (norm.active && norm.raw?.signal?.opened_at) {
           const openedAt = norm.raw.signal.opened_at;
 
           const alreadyOpen =
@@ -1653,7 +1655,8 @@ export default function Dashboard() {
     } catch (e) {
       console.error("Global state sync failed:", e);
     }
-  }, [selectedSymbol, timeframe, price]);   
+  }, [selectedSymbol, timeframe, price]);
+
   useEffect(() => {
     syncGlobalState();
 
@@ -1875,7 +1878,108 @@ export default function Dashboard() {
   const activeAlignmentChip =
     activeTrade?.alignment?.score !== undefined && activeTrade?.alignment?.score !== null
       ? `${activeTrade?.alignment?.label ? `${activeTrade.alignment.label} ` : ""}${Math.round(activeTrade.alignment.score)}%`
-      : null;    
+      : null;
+
+  const commandStripCards = (
+    <>
+      {dailyOutlook ? (
+        <CollapsibleCard
+          title="Daily Market Outlook"
+          className="dailyOutlookCard"
+          isOpen={openSections.dailyOutlook}
+          onToggle={() => toggleSection("dailyOutlook")}
+          right={<div className="tiny">Scanner overview</div>}
+        >
+          <div className="signalLine"><span className="smallText">Headline</span><strong>{dailyOutlook.headline || "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">Best Market</span><strong>{dailyOutlook.best_symbol || "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">Direction</span><strong>{dailyOutlook.best_direction || "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">Confidence</span><strong>{safeNum(dailyOutlook.best_confidence, 0)}%</strong></div>
+          <div className="signalLine"><span className="smallText">Market State</span><strong>{dailyOutlook.market_state || "-"}</strong></div>
+          <div className="signalLine"><span className="smallText">AOI</span><strong>{dailyOutlook.area_of_interest || "-"}</strong></div>
+          <div className="reason"><span className="smallText"><b>Preferred Setup:</b> {dailyOutlook.preferred_setup || "-"}</span></div>
+          <div className="reason"><span className="smallText"><b>Note:</b> {dailyOutlook.note || "-"}</span></div>
+        </CollapsibleCard>
+      ) : null}
+
+      <CollapsibleCard
+        title="AI Sentiment"
+        className="sentimentCard"
+        isOpen={openSections.aiSentiment}
+        onToggle={() => toggleSection("aiSentiment")}
+        right={<span className={`pill ${aiSentiment.tone}`}>{aiSentiment.sentiment}</span>}
+      >
+        <div className="signalLine"><span className="smallText">AI Sentiment</span><strong>{aiSentiment.sentiment}</strong></div>
+        <div className="signalLine"><span className="smallText">Sentiment Score</span><strong>{aiSentiment.score}/100</strong></div>
+        <div className="signalLine"><span className="smallText">Tradable Markets</span><strong>{aiSentiment.tradableCount}</strong></div>
+        <div className="signalLine"><span className="smallText">READY Setups</span><strong>{aiSentiment.readyCount}</strong></div>
+        <div className="signalLine"><span className="smallText">CONFIRMED Setups</span><strong>{aiSentiment.confirmedCount}</strong></div>
+        <div className="signalLine"><span className="smallText">Current Bias</span><strong>{bias}</strong></div>
+        <div className="signalLine"><span className="smallText">Current State</span><strong>{marketState}</strong></div>
+        <div className="reason"><span className="smallText"><b>AI Summary:</b> {aiSentiment.summary}</span></div>
+      </CollapsibleCard>
+
+      {topPick ? (
+        <CollapsibleCard
+          title="Top Pick"
+          className="topPickCard"
+          isOpen={openSections.topPick}
+          onToggle={() => toggleSection("topPick")}
+          right={<div className="tiny">Best live setup</div>}
+        >
+          <div className="topPick">
+            <div className="topPickLeft">
+              <span className="pill fire">🔥 TOP</span>
+              <span className="mono">{topPick.symbol}</span>
+              <span className="pill">{topPick.direction}</span>
+              <span className={`pill ${signalStateTone(topPick.signal_state || "HOLD")}`}>
+                {topPick.signal_state || "HOLD"}
+              </span>
+              <span className="pill">Conf {safeNum(topPick.confidence, 0)}%</span>
+              <span className="pill">Quality {qualityText(topPick.quality_grade, topPick.quality_stars)}</span>
+              {topPick.market_state ? <span className="pill">{topPick.market_state}</span> : null}
+              {topPick.preferred_setup ? <span className="pill">{topPick.preferred_setup}</span> : null}
+              {topPick.confirmation_score !== undefined && topPick.confirmation_score !== null ? (
+                <span className="pill">Score {safeNum(topPick.confirmation_score, 0)}</span>
+              ) : null}
+              <span className="pill">
+                Strength {renderStrengthBar(computeStrength(topPick))} {computeStrength(topPick).toFixed(1)} / 10
+              </span>
+            </div>
+            <div className="topPickRight">
+              <button className="btn small" onClick={() => setSelectedSymbol(topPick.symbol)}>Select</button>
+            </div>
+          </div>
+        </CollapsibleCard>
+      ) : null}
+    </>
+  );
+
+  const intelligenceCards = (
+    <>
+      <CollapsibleCard
+        title="Weekly Stats"
+        className="weeklyStatsCard"
+        isOpen={openSections.weeklyStats}
+        onToggle={() => toggleSection("weeklyStats")}
+        right={
+          <span className={`pill ${weeklyWinTone}`}>
+            {weeklyOutlook?.weekKey || "Current Week"}
+          </span>
+        }
+      >
+        <div className="perfGrid">
+          <div className="perfBox"><div className="perfLabel">Week</div><div className="perfValue" style={{ fontSize: 15 }}>{weeklyOutlook?.weekKey || "-"}</div></div>
+          <div className="perfBox"><div className="perfLabel">Weekly Win %</div><div className="perfValue">{safeNum(weeklyOutlook?.winRate, 0)}%</div></div>
+          <div className="perfBox"><div className="perfLabel">Weekly Loss %</div><div className="perfValue">{safeNum(weeklyOutlook?.lossRate, 0)}%</div></div>
+          <div className="perfBox"><div className="perfLabel">Closed</div><div className="perfValue">{safeNum(weeklyOutlook?.totalClosed, 0)}</div></div>
+          <div className="perfBox"><div className="perfLabel">Wins</div><div className="perfValue">{safeNum(weeklyOutlook?.wins, 0)}</div></div>
+          <div className="perfBox"><div className="perfLabel">Losses</div><div className="perfValue">{safeNum(weeklyOutlook?.losses, 0)}</div></div>
+          <div className="perfBox"><div className="perfLabel">TP1 Wins</div><div className="perfValue">{safeNum(weeklyOutlook?.partials, 0)}</div></div>
+          <div className="perfBox"><div className="perfLabel">TP2 Wins</div><div className="perfValue">{safeNum(weeklyOutlook?.fullWins, 0)}</div></div>
+        </div>
+      </CollapsibleCard>
+    </>
+  ); 
   return (
     <div className="layout">
       <div className="card topCard">
@@ -2040,563 +2144,374 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {dailyOutlook ? (
-        <CollapsibleCard
-          title="Daily Market Outlook"
-          className="dailyOutlookCard"
-          isOpen={openSections.dailyOutlook}
-          onToggle={() => toggleSection("dailyOutlook")}
-          right={<div className="tiny">Scanner overview</div>}
-        >
-          <div className="signalLine"><span className="smallText">Headline</span><strong>{dailyOutlook.headline || "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">Best Market</span><strong>{dailyOutlook.best_symbol || "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">Direction</span><strong>{dailyOutlook.best_direction || "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">Confidence</span><strong>{safeNum(dailyOutlook.best_confidence, 0)}%</strong></div>
-          <div className="signalLine"><span className="smallText">Market State</span><strong>{dailyOutlook.market_state || "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">AOI</span><strong>{dailyOutlook.area_of_interest || "-"}</strong></div>
-          <div className="reason"><span className="smallText"><b>Preferred Setup:</b> {dailyOutlook.preferred_setup || "-"}</span></div>
-          <div className="reason"><span className="smallText"><b>Note:</b> {dailyOutlook.note || "-"}</span></div>
-        </CollapsibleCard>
-      ) : null}
+      <div className="terminalCommandStrip">
+        {commandStripCards}
+      </div>
 
-      <CollapsibleCard
-        title="Weekly Stats"
-        className="weeklyStatsCard"
-        isOpen={openSections.weeklyStats}
-        onToggle={() => toggleSection("weeklyStats")}
-        right={
-          <span className={`pill ${weeklyWinTone}`}>
-            {weeklyOutlook?.weekKey || "Current Week"}
-          </span>
-        }
-      >
-        <div className="perfGrid">
-          <div className="perfBox">
-            <div className="perfLabel">Week</div>
-            <div className="perfValue" style={{ fontSize: 15 }}>
-              {weeklyOutlook?.weekKey || "-"}
+      <div className="terminalExecutionGrid">
+        <div className="terminalExecutionMain">
+          <CollapsibleCard
+            title="Chart"
+            className="chartCard terminalMainChart"
+            isOpen={openSections.chart}
+            onToggle={() => toggleSection("chart")}
+            right={
+              <div className="tiny">
+                Candles: {candles?.length || 0} • S: {supports?.length || 0} • R: {resistances?.length || 0}
+              </div>
+            }
+          >
+            <div className="chartWrap">
+              {selectedSymbol === "ALL" ? (
+                <div
+                  style={{
+                    minHeight: 520,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    opacity: 0.75,
+                    padding: 20,
+                    textAlign: "center",
+                  }}
+                >
+                  Scanner mode selected. Pick one market to view the live chart.
+                </div>
+              ) : (
+                <Chart
+                  key={`${selectedSymbol}-${timeframe}`}
+                  candles={candles}
+                  supports={supports}
+                  resistances={resistances}
+                  symbol={selectedSymbol}
+                  timeframe={timeframe}
+                  entry={entry}
+                  sl={sl}
+                  tp={tp}
+                  tp1={tp1}
+                  tp2={tp2}
+                  zoneLow={zoneLow}
+                  zoneHigh={zoneHigh}
+                  breakLevel={breakLevel}
+                  signalState={signalState}
+                />
+              )}
             </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Weekly Win %</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.winRate, 0)}%
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Weekly Loss %</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.lossRate, 0)}%
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Closed</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.totalClosed, 0)}
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Wins</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.wins, 0)}
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Losses</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.losses, 0)}
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">TP1 Wins</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.partials, 0)}
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">TP2 Wins</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.fullWins, 0)}
-            </div>
-          </div>
+          </CollapsibleCard>
         </div>
-      </CollapsibleCard>
 
-      <CollapsibleCard
-        title="AI Sentiment"
-        className="sentimentCard"
-        isOpen={openSections.aiSentiment}
-        onToggle={() => toggleSection("aiSentiment")}
-        right={<span className={`pill ${aiSentiment.tone}`}>{aiSentiment.sentiment}</span>}
-      >
-        <div className="signalLine"><span className="smallText">AI Sentiment</span><strong>{aiSentiment.sentiment}</strong></div>
-        <div className="signalLine"><span className="smallText">Sentiment Score</span><strong>{aiSentiment.score}/100</strong></div>
-        <div className="signalLine"><span className="smallText">Tradable Markets</span><strong>{aiSentiment.tradableCount}</strong></div>
-        <div className="signalLine"><span className="smallText">READY Setups</span><strong>{aiSentiment.readyCount}</strong></div>
-        <div className="signalLine"><span className="smallText">CONFIRMED Setups</span><strong>{aiSentiment.confirmedCount}</strong></div>
-        <div className="signalLine"><span className="smallText">Current Bias</span><strong>{bias}</strong></div>
-        <div className="signalLine"><span className="smallText">Current State</span><strong>{marketState}</strong></div>
-        <div className="reason"><span className="smallText"><b>AI Summary:</b> {aiSentiment.summary}</span></div>
-      </CollapsibleCard>
-      <CollapsibleCard
-        title="Open Trades"
-        className="openTradesCard"
-        isOpen={openSections.openTrades}
-        onToggle={() => toggleSection("openTrades")}
-        right={<div className="tiny">{openMarkets.length} open</div>}
-      >
-        {openMarkets.length ? (
-          <div className="actionsList">
-            {openMarkets.map((m, idx) => (
-              <div key={`${m.symbol}-${idx}`} className="actionChip" style={{ padding: 10 }}>
-                <span className="mono">{m.symbol}</span>
-                <span className="mono">{m.direction || "-"}</span>
-                <span className={`pill ${signalStateTone(m.signal_state || "ACTIVE")}`}>
-                  {m.signal_state || "ACTIVE"}
-                </span>
-                <span className="mono">Conf {safeNum(m.confidence, 0)}%</span>
-                <span className="mono">{qualityText(m.quality_grade, m.quality_stars)}</span>
-                {m.market_state ? <span className="mono">{m.market_state}</span> : null}
-                {m.confirmation_score !== undefined && m.confirmation_score !== null ? (
-                  <span className="mono">Score {safeNum(m.confirmation_score, 0)}</span>
-                ) : null}
-                <button className="btn small" onClick={() => setSelectedSymbol(m.symbol)}>Select</button>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="emptyRow">No open trades right now.</div>
-        )}
-      </CollapsibleCard>
-
-      <CollapsibleCard
-        title="Active Trade Command Center"
-        className="commandCenterCard"
-        isOpen={openSections.commandCenter}
-        onToggle={() => toggleSection("commandCenter")}
-        right={<span className={`pill ${commandCenter.statusTone}`}>{commandCenter.title}</span>}
-      >
-        {commandCenter.stats?.length ? (
-          <div className="perfGrid">
-            {commandCenter.stats.map((s, idx) => (
-              <div key={idx} className="perfBox">
-                <div className="perfLabel">{s.label}</div>
-                <div className="perfValue" style={{ fontSize: 16 }}>{s.value}</div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        <div className="actionsBox">
-          <div className="tiny"><b>AI Command Checklist:</b></div>
-          <div className="actionsList">
-            {commandCenter.checklist.map((item, idx) => (
-              <div key={idx} className="actionChip">
-                <span>{item}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </CollapsibleCard>
-
-      {topPick ? (
-        <CollapsibleCard
-          title="Top Pick"
-          className="topPickCard"
-          isOpen={openSections.topPick}
-          onToggle={() => toggleSection("topPick")}
-          right={<div className="tiny">Best live setup</div>}
-        >
-          <div className="topPick">
-            <div className="topPickLeft">
-              <span className="pill fire">🔥 TOP</span>
-              <span className="mono">{topPick.symbol}</span>
-              <span className="pill">{topPick.direction}</span>
-              <span className={`pill ${signalStateTone(topPick.signal_state || "HOLD")}`}>
-                {topPick.signal_state || "HOLD"}
-              </span>
-              <span className="pill">Conf {safeNum(topPick.confidence, 0)}%</span>
-              <span className="pill">Quality {qualityText(topPick.quality_grade, topPick.quality_stars)}</span>
-              {topPick.market_state ? <span className="pill">{topPick.market_state}</span> : null}
-              {topPick.preferred_setup ? <span className="pill">{topPick.preferred_setup}</span> : null}
-              {topPick.confirmation_score !== undefined && topPick.confirmation_score !== null ? (
-                <span className="pill">Score {safeNum(topPick.confirmation_score, 0)}</span>
-              ) : null}
-              <span className="pill">
-                Strength {renderStrengthBar(computeStrength(topPick))} {computeStrength(topPick).toFixed(1)} / 10
-              </span>
+        <div className="terminalExecutionSide">
+          <CollapsibleCard
+            title="Market Briefing"
+            className="marketBriefingCard terminalBriefingPanel"
+            isOpen={openSections.marketBriefing}
+            onToggle={() => toggleSection("marketBriefing")}
+            right={<span className={`badge ${status === "LIVE" ? "live" : ""}`}>{status}</span>}
+          >
+            <div className="signalLine"><span className="smallText">Market</span><strong>{selectedSymbol} — {selectedName}</strong></div>
+            <div className="signalLine"><span className="smallText">Timeframe</span><strong>{timeframe}</strong></div>
+            <div className="signalLine"><span className="smallText">Bias</span><strong>{bias}</strong></div>
+            <div className="signalLine"><span className="smallText">Monthly Bias</span><strong>{monthlyBias}</strong></div>
+            <div className="signalLine"><span className="smallText">Weekly Bias</span><strong>{weeklyBias}</strong></div>
+            <div className="signalLine"><span className="smallText">Daily Bias</span><strong>{dailyBias}</strong></div>
+            <div className="signalLine"><span className="smallText">Structure</span><strong>{structure}</strong></div>
+            <div className="signalLine"><span className="smallText">Previous Trend</span><strong>{previousTrend}</strong></div>
+            <div className="signalLine"><span className="smallText">Trend Strength</span><strong>{trendStrength === null ? "-" : trendStrength}</strong></div>
+            <div className="signalLine"><span className="smallText">Market State</span><strong><span className={`pill ${marketStateTone}`}>{marketState}</span></strong></div>
+            <div className="signalLine"><span className="smallText">Reversal Risk</span><strong><span className={`pill ${reversalTone}`}>{reversalRisk}</span></strong></div>
+            <div className="signalLine"><span className="smallText">AOI</span><strong>{areaOfInterest}</strong></div>
+            <div className="signalLine">
+              <span className="smallText">Signal State</span>
+              <strong><span className={`pill ${signalStateBadgeTone}`}>{signalState}</span></strong>
             </div>
-            <div className="topPickRight">
-              <button className="btn small" onClick={() => setSelectedSymbol(topPick.symbol)}>Select</button>
-            </div>
-          </div>
-        </CollapsibleCard>
-      ) : null}
+            <div className="signalLine"><span className="smallText">Confirmation Score</span><strong>{confirmationScore ?? "-"}</strong></div>
+            <div className="signalLine"><span className="smallText">Sweep</span><strong>{boolChip(hasSweep)}</strong></div>
+            <div className="signalLine"><span className="smallText">Structure Break</span><strong>{boolChip(hasStructureBreak)}</strong></div>
+            <div className="signalLine"><span className="smallText">Retest</span><strong>{boolChip(hasRetest)}</strong></div>
+            <div className="signalLine"><span className="smallText">Break Level</span><strong>{breakLevel ?? "-"}</strong></div>
+            <div className="reason"><span className="smallText"><b>Preferred Setup:</b> {preferredSetup}</span></div>
+            <div className="reason"><span className="smallText"><b>Confirmation Needed:</b> {confirmationNeeded}</span></div>
+            <div className="reason"><span className="smallText"><b>AI Trade Explanation:</b> {aiExplanation}</span></div>
+          </CollapsibleCard>
 
-      <div className="mainGrid">
-        <CollapsibleCard
-          title="Chart"
-          className="chartCard"
-          isOpen={openSections.chart}
-          onToggle={() => toggleSection("chart")}
-          right={
-            <div className="tiny">
-              Candles: {candles?.length || 0} • S: {supports?.length || 0} • R: {resistances?.length || 0}
-            </div>
-          }
-        >
-          <div className="chartWrap">
-            {selectedSymbol === "ALL" ? (
-              <div
-                style={{
-                  minHeight: 460,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  opacity: 0.75,
-                  padding: 20,
-                  textAlign: "center",
-                }}
-              >
-                Scanner mode selected. Pick one market to view the live chart.
+          <CollapsibleCard
+            title="Open Trades"
+            className="openTradesCard"
+            isOpen={openSections.openTrades}
+            onToggle={() => toggleSection("openTrades")}
+            right={<div className="tiny">{openMarkets.length} open</div>}
+          >
+            {openMarkets.length ? (
+              <div className="actionsList">
+                {openMarkets.map((m, idx) => (
+                  <div key={`${m.symbol}-${idx}`} className="actionChip" style={{ padding: 10 }}>
+                    <span className="mono">{m.symbol}</span>
+                    <span className="mono">{m.direction || "-"}</span>
+                    <span className={`pill ${signalStateTone(m.signal_state || "ACTIVE")}`}>
+                      {m.signal_state || "ACTIVE"}
+                    </span>
+                    <span className="mono">Conf {safeNum(m.confidence, 0)}%</span>
+                    <button className="btn small" onClick={() => setSelectedSymbol(m.symbol)}>Select</button>
+                  </div>
+                ))}
               </div>
             ) : (
-              <Chart
-                key={`${selectedSymbol}-${timeframe}`}
-                candles={candles}
-                supports={supports}
-                resistances={resistances}
-                symbol={selectedSymbol}
-                timeframe={timeframe}
-                entry={entry}
-                sl={sl}
-                tp={tp}
-                tp1={tp1}
-                tp2={tp2}
-                zoneLow={zoneLow}
-                zoneHigh={zoneHigh}
-                breakLevel={breakLevel}
-                signalState={signalState}
-              />
+              <div className="emptyRow">No open trades right now.</div>
             )}
-          </div>
-        </CollapsibleCard>
+          </CollapsibleCard>
 
-        <CollapsibleCard
-          title="Market Briefing"
-          className="marketBriefingCard"
-          isOpen={openSections.marketBriefing}
-          onToggle={() => toggleSection("marketBriefing")}
-          right={<span className={`badge ${status === "LIVE" ? "live" : ""}`}>{status}</span>}
-        >
-          <div className="signalLine"><span className="smallText">Market</span><strong>{selectedSymbol} — {selectedName}</strong></div>
-          <div className="signalLine"><span className="smallText">Timeframe</span><strong>{timeframe}</strong></div>
-          <div className="signalLine"><span className="smallText">Bias</span><strong>{bias}</strong></div>
-          <div className="signalLine"><span className="smallText">Monthly Bias</span><strong>{monthlyBias}</strong></div>
-          <div className="signalLine"><span className="smallText">Weekly Bias</span><strong>{weeklyBias}</strong></div>
-          <div className="signalLine"><span className="smallText">Daily Bias</span><strong>{dailyBias}</strong></div>
-          <div className="signalLine"><span className="smallText">Structure</span><strong>{structure}</strong></div>
-          <div className="signalLine"><span className="smallText">Previous Trend</span><strong>{previousTrend}</strong></div>
-          <div className="signalLine"><span className="smallText">Trend Strength</span><strong>{trendStrength === null ? "-" : trendStrength}</strong></div>
-          <div className="signalLine"><span className="smallText">Market State</span><strong><span className={`pill ${marketStateTone}`}>{marketState}</span></strong></div>
-          <div className="signalLine"><span className="smallText">Reversal Risk</span><strong><span className={`pill ${reversalTone}`}>{reversalRisk}</span></strong></div>
-          <div className="signalLine"><span className="smallText">Buyer Zone</span><strong>{buyerZone}</strong></div>
-          <div className="signalLine"><span className="smallText">Seller Zone</span><strong>{sellerZone}</strong></div>
-          <div className="signalLine"><span className="smallText">AOI</span><strong>{areaOfInterest}</strong></div>
-          <div className="signalLine"><span className="smallText">Support</span><strong>{briefSupport}</strong></div>
-          <div className="signalLine"><span className="smallText">Resistance</span><strong>{briefResistance}</strong></div>
-          <div className="signalLine"><span className="smallText">Liquidity Below</span><strong>{liquidityBelow}</strong></div>
-          <div className="signalLine"><span className="smallText">Liquidity Above</span><strong>{liquidityAbove}</strong></div>
-          <div className="reason"><span className="smallText"><b>Preferred Setup:</b> {preferredSetup}</span></div>
-          <div className="reason"><span className="smallText"><b>Confirmation Needed:</b> {confirmationNeeded}</span></div>
-          <div className="reason"><span className="smallText"><b>Invalidation:</b> {invalidation}</span></div>
-
-          <hr style={{ opacity: 0.15, margin: "14px 0" }} />
-
-          <div className="signalLine"><span className="smallText">Signal Direction</span><strong>{direction}</strong></div>
-          <div className="signalLine">
-            <span className="smallText">Signal State</span>
-            <strong><span className={`pill ${signalStateBadgeTone}`}>{signalState}</span></strong>
-          </div>
-          <div className="signalLine"><span className="smallText">Confidence</span><strong>{confidence}%</strong></div>
-          <div className="signalLine"><span className="smallText">Signal Quality</span><strong>{qualityText(qualityGrade, qualityStars)}</strong></div>
-          <div className="signalLine"><span className="smallText">Entry Type</span><strong>{entryType || "—"}</strong></div>
-          <div className="signalLine"><span className="smallText">Weighted Alignment</span><strong>{currentAlignmentChip || "—"}</strong></div>
-
-          {alignmentDetails?.length ? (
-            <div className="alignBox">
-              <div className="tiny"><b>Alignment details:</b></div>
-              <div className="alignList">
-                {alignmentDetails.slice(0, 6).map((d, idx) => {
-                  const tf = d.tf || d.timeframe || d.t || "?";
-                  const dir = d.dir || d.direction || "-";
-                  const w = d.weight !== undefined ? d.weight : d.w;
-                  const ok = d.ok ?? d.match ?? d.aligned;
-                  return (
-                    <span key={idx} className={`pill ${ok === false ? "pillLoss" : ok === true ? "pillWin" : ""}`}>
-                      {tf}:{dir}{w !== undefined ? ` (w ${w})` : ""}
-                    </span>
-                  );
-                })}
+          <CollapsibleCard
+            title="Active Trade Command Center"
+            className="commandCenterCard"
+            isOpen={openSections.commandCenter}
+            onToggle={() => toggleSection("commandCenter")}
+            right={<span className={`pill ${commandCenter.statusTone}`}>{commandCenter.title}</span>}
+          >
+            {commandCenter.stats?.length ? (
+              <div className="perfGrid">
+                {commandCenter.stats.map((s, idx) => (
+                  <div key={idx} className="perfBox">
+                    <div className="perfLabel">{s.label}</div>
+                    <div className="perfValue" style={{ fontSize: 16 }}>{s.value}</div>
+                  </div>
+                ))}
               </div>
-            </div>
-          ) : null}
+            ) : null}
 
-          <div className="signalLine"><span className="smallText">Entry</span><strong>{entry ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">SL</span><strong>{sl ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">TP1</span><strong>{tp1 ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">TP2</span><strong>{tp2 ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">Zone Low</span><strong>{zoneLow ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">Zone High</span><strong>{zoneHigh ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">Break Level</span><strong>{breakLevel ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">Confirmation Score</span><strong>{confirmationScore ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">Sweep</span><strong>{boolChip(hasSweep)}</strong></div>
-          <div className="signalLine"><span className="smallText">Structure Break</span><strong>{boolChip(hasStructureBreak)}</strong></div>
-          <div className="signalLine"><span className="smallText">Retest</span><strong>{boolChip(hasRetest)}</strong></div>
-          <div className="signalLine"><span className="smallText">Confirmation Candle</span><strong>{boolChip(confirmationCandle)}</strong></div>
-          <div className="signalLine"><span className="smallText">TP1 R:R</span><strong>{tp1Multiple === null ? "—" : tp1Multiple.toFixed(2)}</strong></div>
-          <div className="signalLine"><span className="smallText">TP2 R:R</span><strong>{rrMultiple === null ? "—" : rrMultiple.toFixed(2)}</strong></div>
-
-          <div className="reason"><span className="smallText"><b>Reason:</b> {reason}</span></div>
-
-          <div className="reason" style={{ marginTop: 12 }}>
-            <span className="smallText"><b>AI Trade Explanation:</b></span>
-            <div className="tiny note" style={{ marginTop: 6 }}>{aiExplanation}</div>
-          </div>
-
-          {lastActions?.length ? (
             <div className="actionsBox">
-              <div className="tiny"><b>Backend actions:</b></div>
+              <div className="tiny"><b>AI Command Checklist:</b></div>
               <div className="actionsList">
-                {lastActions.slice(0, 4).map((a, idx) => (
+                {commandCenter.checklist.map((item, idx) => (
                   <div key={idx} className="actionChip">
-                    <span className="mono">{a.type}</span>
-                    {a.to !== undefined ? <span className="mono">→ {a.to}</span> : null}
-                    {a.percent !== undefined ? <span className="mono">({Math.round(a.percent * 100)}%)</span> : null}
+                    <span>{item}</span>
                   </div>
                 ))}
               </div>
             </div>
-          ) : null}
-        </CollapsibleCard>
-      </div>      
-       <CollapsibleCard
-        title="Risk Calculator"
-        className="riskCard"
-        isOpen={openSections.riskCalculator}
-        onToggle={() => toggleSection("riskCalculator")}
-        right={<div className="tiny">Premium Tool</div>}
-      >
-        <div className="togglesRow" style={{ alignItems: "flex-end" }}>
-          <div className="miniField">
-            <span className="miniLabel">Account</span>
-            <input className="miniInput" value={accountSize} onChange={(e) => setAccountSize(e.target.value)} inputMode="decimal" />
-          </div>
-
-          <div className="miniField">
-            <span className="miniLabel">Risk %</span>
-            <input className="miniInput" value={riskPercent} onChange={(e) => setRiskPercent(e.target.value)} inputMode="decimal" />
-          </div>
+          </CollapsibleCard>
         </div>
+      </div>
 
-        <div className="perfGrid" style={{ marginTop: 14 }}>
-          <div className="perfBox"><div className="perfLabel">Risk Amount</div><div className="perfValue">${safeNum(riskAmount, 0).toFixed(2)}</div></div>
-          <div className="perfBox"><div className="perfLabel">TP1 R:R</div><div className="perfValue">{tp1Multiple === null ? "—" : tp1Multiple.toFixed(2)}</div></div>
-          <div className="perfBox"><div className="perfLabel">TP2 R:R</div><div className="perfValue">{rrMultiple === null ? "—" : rrMultiple.toFixed(2)}</div></div>
-          <div className="perfBox"><div className="perfLabel">Est. TP1</div><div className="perfValue">{estimatedTp1Profit === null ? "—" : `$${estimatedTp1Profit.toFixed(2)}`}</div></div>
-          <div className="perfBox"><div className="perfLabel">Est. TP2</div><div className="perfValue">{estimatedTp2Profit === null ? "—" : `$${estimatedTp2Profit.toFixed(2)}`}</div></div>
-        </div>
-      </CollapsibleCard>
+      <div className="terminalIntelStack">
+        {intelligenceCards}
 
-      <CollapsibleCard
-        title="Scanner"
-        className="scannerCard"
-        isOpen={openSections.scanner}
-        onToggle={() => toggleSection("scanner")}
-        right={<div className="tiny">Markets: {ranked?.length || 0}</div>}
-      >
-        <div className="tableWrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Market</th>
-                <th>Smart Label</th>
-                <th>Signal State</th>
-                <th>Bias</th>
-                <th>State</th>
-                <th>Risk</th>
-                <th>Action</th>
-                <th>Conf</th>
-                <th>Confirm Score</th>
-                <th>Quality</th>
-                <th>Strength</th>
-                <th>Sweep</th>
-                <th>BOS</th>
-                <th>Retest</th>
-                <th>AOI</th>
-                <th>Setup</th>
-                <th>Entry</th>
-                <th>SL</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ranked?.length ? (
-                ranked.map((r, idx) => {
-                  const isHot =
-                    idx === 0 &&
-                    (r.direction === "BUY" || r.direction === "SELL") &&
-                    signalStateRank(r.signal_state || r.signalState, !!r.active_trade) >= 4;
-
-                  const smartLabel = getScannerSmartLabel(r, idx);
-
-                  return (
-                    <tr key={`${r.symbol || idx}-${idx}`} className={isHot ? "hotRow" : ""}>
-                      <td className="mono">
-                        {r.symbol ?? "-"} {isHot ? <span className="pill fireTiny">🔥</span> : null}
-                        {r.active_trade ? <span className="pill pillWin" style={{ marginLeft: 6 }}>ACTIVE</span> : null}
-                      </td>
-                      <td><span className={`pill ${smartLabel.tone}`}>{smartLabel.text}</span></td>
-                      <td><span className={`pill ${signalStateTone(r.signal_state || r.signalState || "HOLD")}`}>{r.signal_state || r.signalState || "HOLD"}</span></td>
-                      <td>{r.bias ?? "—"}</td>
-                      <td className="notes">{r.market_state ?? "—"}</td>
-                      <td>{r.reversal_risk ?? "—"}</td>
-                      <td>{r.direction ?? "—"}</td>
-                      <td>{safeNum(r.confidence, 0)}%</td>
-                      <td>{r.confirmation_score ?? "—"}</td>
-                      <td>{qualityText(r.quality_grade, r.quality_stars)}</td>
-                      <td className="mono">
-                        {(() => {
-                          const s = computeStrength(r);
-                          return `${renderStrengthBar(s)} ${s.toFixed(1)} / 10`;
-                        })()}
-                      </td>
-                      <td>{boolChip(!!r.has_sweep)}</td>
-                      <td>{boolChip(!!r.has_structure_break)}</td>
-                      <td>{boolChip(!!r.has_retest)}</td>
-                      <td className="notes">{r.area_of_interest ?? "—"}</td>
-                      <td className="notes">{r.preferred_setup ?? r.entry_type ?? "—"}</td>
-                      <td>{r.entry ?? "-"}</td>
-                      <td>{r.sl ?? "-"}</td>
-                    </tr>
-                  );
-                })
-              ) : (
-                <tr><td colSpan="18" className="emptyRow">No markets loaded yet. Scan markets or wait for sync.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </CollapsibleCard>
-
-      {showHistory ? (
         <CollapsibleCard
-          title="History & Performance"
-          className="historyCard"
-          isOpen={openSections.history}
-          onToggle={() => toggleSection("history")}
-          right={
-            <div className="tiny">
-              Closed: {performance.closedCount} • Wins: {performance.wins} • Losses: {performance.losses} • B/E: {performance.breakevens} • Win%: {performance.winRate}% • Sum R: {performance.sumR}
-            </div>
-          }
+          title="Risk Calculator"
+          className="riskCard"
+          isOpen={openSections.riskCalculator}
+          onToggle={() => toggleSection("riskCalculator")}
+          right={<div className="tiny">Premium Tool</div>}
         >
-          <div className="perfGrid">
-            <div className="perfBox"><div className="perfLabel">Avg R</div><div className="perfValue">{performance.avgR}</div></div>
-            <div className="perfBox"><div className="perfLabel">Win %</div><div className="perfValue">{performance.winRate}%</div></div>
-            <div className="perfBox"><div className="perfLabel">Loss %</div><div className="perfValue">{performance.lossRate}%</div></div>
-            <div className="perfBox"><div className="perfLabel">B/E %</div><div className="perfValue">{performance.breakevenRate}%</div></div>
-            <div className="perfBox"><div className="perfLabel">Best Win Streak</div><div className="perfValue">{performance.bestWinStreak}</div></div>
-            <div className="perfBox"><div className="perfLabel">Worst Lose Streak</div><div className="perfValue">{performance.bestLoseStreak}</div></div>
-            <div className="perfBox"><div className="perfLabel">Last 30 (R)</div><div className="perfValue">{performance.last30R}</div></div>
-            <div className="perfBox"><div className="perfLabel">Best Market</div><div className="perfValue">{personalBestMarket}</div></div>
-            <div className="perfBox"><div className="perfLabel">Best Setup</div><div className="perfValue" style={{ fontSize: 14 }}>{personalBestSetup}</div></div>
-            <div className="perfBox"><div className="perfLabel">Trades Logged</div><div className="perfValue">{history.length}</div></div>
+          <div className="togglesRow" style={{ alignItems: "flex-end" }}>
+            <div className="miniField">
+              <span className="miniLabel">Account</span>
+              <input className="miniInput" value={accountSize} onChange={(e) => setAccountSize(e.target.value)} inputMode="decimal" />
+            </div>
+
+            <div className="miniField">
+              <span className="miniLabel">Risk %</span>
+              <input className="miniInput" value={riskPercent} onChange={(e) => setRiskPercent(e.target.value)} inputMode="decimal" />
+            </div>
           </div>
 
-          <div className="historyActions">
-            <button className="btn small" onClick={clearHistory}>Clear history</button>
-            <span className={`reviewBadge ${performance.closedCount >= 30 ? "ready" : ""}`}>
-              {performance.closedCount >= 30 ? "✅ Review ready (30 trades)" : `Review after 30 trades (${performance.closedCount}/30)`}
-            </span>
+          <div className="perfGrid" style={{ marginTop: 14 }}>
+            <div className="perfBox"><div className="perfLabel">Risk Amount</div><div className="perfValue">${safeNum(riskAmount, 0).toFixed(2)}</div></div>
+            <div className="perfBox"><div className="perfLabel">TP1 R:R</div><div className="perfValue">{tp1Multiple === null ? "—" : tp1Multiple.toFixed(2)}</div></div>
+            <div className="perfBox"><div className="perfLabel">TP2 R:R</div><div className="perfValue">{rrMultiple === null ? "—" : rrMultiple.toFixed(2)}</div></div>
+            <div className="perfBox"><div className="perfLabel">Est. TP1</div><div className="perfValue">{estimatedTp1Profit === null ? "—" : `$${estimatedTp1Profit.toFixed(2)}`}</div></div>
+            <div className="perfBox"><div className="perfLabel">Est. TP2</div><div className="perfValue">{estimatedTp2Profit === null ? "—" : `$${estimatedTp2Profit.toFixed(2)}`}</div></div>
           </div>
+        </CollapsibleCard>
 
+        <CollapsibleCard
+          title="Scanner"
+          className="scannerCard"
+          isOpen={openSections.scanner}
+          onToggle={() => toggleSection("scanner")}
+          right={<div className="tiny">Markets: {ranked?.length || 0}</div>}
+        >
           <div className="tableWrap">
             <table className="table">
               <thead>
                 <tr>
-                  <th>Time</th>
                   <th>Market</th>
-                  <th>TF</th>
-                  <th>Dir</th>
+                  <th>Smart Label</th>
                   <th>Signal State</th>
-                  <th>Mode</th>
-                  <th>Quality</th>
+                  <th>Bias</th>
+                  <th>State</th>
+                  <th>Risk</th>
+                  <th>Action</th>
                   <th>Conf</th>
                   <th>Confirm Score</th>
+                  <th>Quality</th>
+                  <th>Strength</th>
+                  <th>Sweep</th>
+                  <th>BOS</th>
+                  <th>Retest</th>
+                  <th>AOI</th>
+                  <th>Setup</th>
                   <th>Entry</th>
                   <th>SL</th>
-                  <th>TP1</th>
-                  <th>TP2</th>
-                  <th>Outcome</th>
-                  <th>R</th>
                 </tr>
               </thead>
               <tbody>
-                {history?.length ? (
-                  [...history].slice(-50).reverse().map((t) => (
-                    <tr
-                      key={t.id}
-                      className={
-                        t.outcome === "TP2" || t.outcome === "TP1_ONLY"
-                          ? "winRow"
-                          : t.outcome === "SL"
-                          ? "lossRow"
-                          : ""
-                      }
-                    >
-                      <td className="tiny">{t.closedAt ? toIso(t.closedAt) : toIso(t.openedAt)}</td>
-                      <td className="mono">{t.symbol}</td>
-                      <td>{t.timeframe}</td>
-                      <td>{t.direction}</td>
-                      <td><span className={`pill ${signalStateTone(t.signalState || "HOLD")}`}>{t.signalState || "HOLD"}</span></td>
-                      <td>{t.entryType || "—"}</td>
-                      <td>{qualityText(t.qualityGrade, t.qualityStars)}</td>
-                      <td>{safeNum(t.confidence, 0)}%</td>
-                      <td>{t.confirmationScore ?? "—"}</td>
-                      <td>{fmt(t.entry)}</td>
-                      <td>{fmt(t.sl)}</td>
-                      <td>{fmt(t.tp1)}</td>
-                      <td>{fmt(t.tp2 ?? t.tp)}</td>
-                      <td>
-                        <span className={`pill ${outcomeTone(t.outcome)}`}>
-                          {formatOutcomeLabel(t.outcome)}
-                        </span>
-                      </td>
-                      <td>
-                        {t.outcome === "TP2"
-                          ? `+${t.rMult ?? "?"}`
-                          : t.outcome === "TP1_ONLY"
-                          ? `+${t.tp1RMult ?? "?"}`
-                          : t.outcome === "SL"
-                          ? "-1"
-                          : t.outcome === "BE"
-                          ? "0"
-                          : "—"}
-                      </td>
-                    </tr>
-                  ))
+                {ranked?.length ? (
+                  ranked.map((r, idx) => {
+                    const isHot =
+                      idx === 0 &&
+                      (r.direction === "BUY" || r.direction === "SELL") &&
+                      signalStateRank(r.signal_state || r.signalState, !!r.active_trade) >= 4;
+
+                    const smartLabel = getScannerSmartLabel(r, idx);
+
+                    return (
+                      <tr key={`${r.symbol || idx}-${idx}`} className={isHot ? "hotRow" : ""}>
+                        <td className="mono">
+                          {r.symbol ?? "-"} {isHot ? <span className="pill fireTiny">🔥</span> : null}
+                          {r.active_trade ? <span className="pill pillWin" style={{ marginLeft: 6 }}>ACTIVE</span> : null}
+                        </td>
+                        <td><span className={`pill ${smartLabel.tone}`}>{smartLabel.text}</span></td>
+                        <td><span className={`pill ${signalStateTone(r.signal_state || r.signalState || "HOLD")}`}>{r.signal_state || r.signalState || "HOLD"}</span></td>
+                        <td>{r.bias ?? "—"}</td>
+                        <td className="notes">{r.market_state ?? "—"}</td>
+                        <td>{r.reversal_risk ?? "—"}</td>
+                        <td>{r.direction ?? "—"}</td>
+                        <td>{safeNum(r.confidence, 0)}%</td>
+                        <td>{r.confirmation_score ?? "—"}</td>
+                        <td>{qualityText(r.quality_grade, r.quality_stars)}</td>
+                        <td className="mono">
+                          {(() => {
+                            const s = computeStrength(r);
+                            return `${renderStrengthBar(s)} ${s.toFixed(1)} / 10`;
+                          })()}
+                        </td>
+                        <td>{boolChip(!!r.has_sweep)}</td>
+                        <td>{boolChip(!!r.has_structure_break)}</td>
+                        <td>{boolChip(!!r.has_retest)}</td>
+                        <td className="notes">{r.area_of_interest ?? "—"}</td>
+                        <td className="notes">{r.preferred_setup ?? r.entry_type ?? "—"}</td>
+                        <td>{r.entry ?? "-"}</td>
+                        <td>{r.sl ?? "-"}</td>
+                      </tr>
+                    );
+                  })
                 ) : (
-                  <tr><td colSpan="15" className="emptyRow">No history yet.</td></tr>
+                  <tr><td colSpan="18" className="emptyRow">No markets loaded yet. Scan markets or wait for sync.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
-
-          <div className="tiny note">
-            Note: TP1-only closes count as wins, breakeven stays neutral, and the upgraded bot now separates WATCH, CONFIRMED, and READY states before execution.
-          </div>
         </CollapsibleCard>
-      ) : null}
+
+        {showHistory ? (
+          <CollapsibleCard
+            title="History & Performance"
+            className="historyCard"
+            isOpen={openSections.history}
+            onToggle={() => toggleSection("history")}
+            right={
+              <div className="tiny">
+                Closed: {performance.closedCount} • Wins: {performance.wins} • Losses: {performance.losses} • B/E: {performance.breakevens} • Win%: {performance.winRate}% • Sum R: {performance.sumR}
+              </div>
+            }
+          >
+            <div className="perfGrid">
+              <div className="perfBox"><div className="perfLabel">Avg R</div><div className="perfValue">{performance.avgR}</div></div>
+              <div className="perfBox"><div className="perfLabel">Win %</div><div className="perfValue">{performance.winRate}%</div></div>
+              <div className="perfBox"><div className="perfLabel">Loss %</div><div className="perfValue">{performance.lossRate}%</div></div>
+              <div className="perfBox"><div className="perfLabel">B/E %</div><div className="perfValue">{performance.breakevenRate}%</div></div>
+              <div className="perfBox"><div className="perfLabel">Best Win Streak</div><div className="perfValue">{performance.bestWinStreak}</div></div>
+              <div className="perfBox"><div className="perfLabel">Worst Lose Streak</div><div className="perfValue">{performance.bestLoseStreak}</div></div>
+              <div className="perfBox"><div className="perfLabel">Last 30 (R)</div><div className="perfValue">{performance.last30R}</div></div>
+              <div className="perfBox"><div className="perfLabel">Best Market</div><div className="perfValue">{personalBestMarket}</div></div>
+              <div className="perfBox"><div className="perfLabel">Best Setup</div><div className="perfValue" style={{ fontSize: 14 }}>{personalBestSetup}</div></div>
+              <div className="perfBox"><div className="perfLabel">Trades Logged</div><div className="perfValue">{history.length}</div></div>
+            </div>
+
+            <div className="historyActions">
+              <button className="btn small" onClick={clearHistory}>Clear history</button>
+              <span className={`reviewBadge ${performance.closedCount >= 30 ? "ready" : ""}`}>
+                {performance.closedCount >= 30 ? "✅ Review ready (30 trades)" : `Review after 30 trades (${performance.closedCount}/30)`}
+              </span>
+            </div>
+
+            <div className="tableWrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Market</th>
+                    <th>TF</th>
+                    <th>Dir</th>
+                    <th>Signal State</th>
+                    <th>Mode</th>
+                    <th>Quality</th>
+                    <th>Conf</th>
+                    <th>Confirm Score</th>
+                    <th>Entry</th>
+                    <th>SL</th>
+                    <th>TP1</th>
+                    <th>TP2</th>
+                    <th>Outcome</th>
+                    <th>R</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history?.length ? (
+                    [...history].slice(-50).reverse().map((t) => (
+                      <tr
+                        key={t.id}
+                        className={
+                          t.outcome === "TP2" || t.outcome === "TP1_ONLY"
+                            ? "winRow"
+                            : t.outcome === "SL"
+                            ? "lossRow"
+                            : ""
+                        }
+                      >
+                        <td className="tiny">{t.closedAt ? toIso(t.closedAt) : toIso(t.openedAt)}</td>
+                        <td className="mono">{t.symbol}</td>
+                        <td>{t.timeframe}</td>
+                        <td>{t.direction}</td>
+                        <td><span className={`pill ${signalStateTone(t.signalState || "HOLD")}`}>{t.signalState || "HOLD"}</span></td>
+                        <td>{t.entryType || "—"}</td>
+                        <td>{qualityText(t.qualityGrade, t.qualityStars)}</td>
+                        <td>{safeNum(t.confidence, 0)}%</td>
+                        <td>{t.confirmationScore ?? "—"}</td>
+                        <td>{fmt(t.entry)}</td>
+                        <td>{fmt(t.sl)}</td>
+                        <td>{fmt(t.tp1)}</td>
+                        <td>{fmt(t.tp2 ?? t.tp)}</td>
+                        <td>
+                          <span className={`pill ${outcomeTone(t.outcome)}`}>
+                            {formatOutcomeLabel(t.outcome)}
+                          </span>
+                        </td>
+                        <td>
+                          {t.outcome === "TP2"
+                            ? `+${t.rMult ?? "?"}`
+                            : t.outcome === "TP1_ONLY"
+                            ? `+${t.tp1RMult ?? "?"}`
+                            : t.outcome === "SL"
+                            ? "-1"
+                            : t.outcome === "BE"
+                            ? "0"
+                            : "—"}
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr><td colSpan="15" className="emptyRow">No history yet.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="tiny note">
+              Note: TP1-only closes count as wins, breakeven stays neutral, and the upgraded bot now separates WATCH, CONFIRMED, and READY states before execution.
+            </div>
+          </CollapsibleCard>
+        ) : null}
+      </div>
     </div>
   );
-}     
+}       

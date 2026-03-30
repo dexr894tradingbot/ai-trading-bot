@@ -1,6 +1,6 @@
 // frontend/src/Chart.js
 import React, { useEffect, useRef } from "react";
-import { createChart, CandlestickSeries } from "lightweight-charts";
+import { createChart, CandlestickSeries, LineSeries, AreaSeries } from "lightweight-charts";
 
 function safeNumber(v) {
   const n = Number(v);
@@ -26,6 +26,49 @@ function normalizeCandle(c) {
 
   return { time, open, high, low, close };
 }
+
+function lineStyleFromSignalState(signalState) {
+  if (signalState === "READY") return 0;
+  if (signalState === "CONFIRMED") return 1;
+  if (signalState === "WATCH") return 2;
+  return 2;
+}
+
+function zoneLabelPrefix(signalState) {
+  if (signalState === "READY") return "READY ZONE";
+  if (signalState === "CONFIRMED") return "CONFIRM ZONE";
+  if (signalState === "WATCH") return "WATCH ZONE";
+  return "ZONE";
+}
+
+function zoneColors(signalState) {
+  if (signalState === "READY") {
+    return {
+      line: "#2dffb4",
+      top: "rgba(45,255,180,0.18)",
+      bottom: "rgba(45,255,180,0.03)",
+    };
+  }
+  if (signalState === "CONFIRMED") {
+    return {
+      line: "#ffd76a",
+      top: "rgba(255,215,106,0.16)",
+      bottom: "rgba(255,215,106,0.03)",
+    };
+  }
+  return {
+    line: "#7ae7ff",
+    top: "rgba(122,231,255,0.14)",
+    bottom: "rgba(122,231,255,0.03)",
+  };
+}
+
+function lastTimeFromCandles(candles) {
+  if (!Array.isArray(candles) || !candles.length) return null;
+  const last = normalizeCandle(candles[candles.length - 1]);
+  return last?.time ?? null;
+}
+
 export default function Chart({
   candles = [],
   supports = [],
@@ -37,12 +80,20 @@ export default function Chart({
   tp = null,
   tp1 = null,
   tp2 = null,
+  zoneLow = null,
+  zoneHigh = null,
+  breakLevel = null,
+  signalState = "HOLD",
 }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const candleSeriesRef = useRef(null);
   const priceLinesRef = useRef([]);
   const resizeObserverRef = useRef(null);
+
+  const zoneTopSeriesRef = useRef(null);
+  const zoneBottomSeriesRef = useRef(null);
+  const breakSeriesRef = useRef(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -54,6 +105,9 @@ export default function Chart({
       chartRef.current = null;
       candleSeriesRef.current = null;
       priceLinesRef.current = [];
+      zoneTopSeriesRef.current = null;
+      zoneBottomSeriesRef.current = null;
+      breakSeriesRef.current = null;
     }
 
     const chart = createChart(containerRef.current, {
@@ -93,9 +147,10 @@ export default function Chart({
     });
 
     chartRef.current = chart;
-        let series;
+
+    let candleSeries;
     if (typeof chart.addCandlestickSeries === "function") {
-      series = chart.addCandlestickSeries({
+      candleSeries = chart.addCandlestickSeries({
         upColor: "#2dffb4",
         downColor: "#ff5f8a",
         borderUpColor: "#2dffb4",
@@ -106,7 +161,7 @@ export default function Chart({
         lastValueVisible: true,
       });
     } else if (typeof chart.addSeries === "function") {
-      series = chart.addSeries(CandlestickSeries, {
+      candleSeries = chart.addSeries(CandlestickSeries, {
         upColor: "#2dffb4",
         downColor: "#ff5f8a",
         borderUpColor: "#2dffb4",
@@ -121,7 +176,71 @@ export default function Chart({
       return;
     }
 
-    candleSeriesRef.current = series;
+    candleSeriesRef.current = candleSeries;
+
+    let zoneTopSeries;
+    let zoneBottomSeries;
+    let breakSeries;
+
+    if (typeof chart.addLineSeries === "function") {
+      zoneTopSeries = chart.addLineSeries({
+        color: "#7ae7ff",
+        lineWidth: 2,
+        lineVisible: true,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+
+      zoneBottomSeries = chart.addLineSeries({
+        color: "#7ae7ff",
+        lineWidth: 2,
+        lineVisible: true,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+
+      breakSeries = chart.addLineSeries({
+        color: "#ffb86b",
+        lineWidth: 2,
+        lineVisible: true,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+    } else if (typeof chart.addSeries === "function") {
+      zoneTopSeries = chart.addSeries(LineSeries, {
+        color: "#7ae7ff",
+        lineWidth: 2,
+        lineVisible: true,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+
+      zoneBottomSeries = chart.addSeries(LineSeries, {
+        color: "#7ae7ff",
+        lineWidth: 2,
+        lineVisible: true,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+
+      breakSeries = chart.addSeries(LineSeries, {
+        color: "#ffb86b",
+        lineWidth: 2,
+        lineVisible: true,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+    }
+
+    zoneTopSeriesRef.current = zoneTopSeries;
+    zoneBottomSeriesRef.current = zoneBottomSeries;
+    breakSeriesRef.current = breakSeries;
 
     const handleResize = () => {
       if (!containerRef.current || !chartRef.current) return;
@@ -154,6 +273,7 @@ export default function Chart({
       } catch {}
     };
   }, [symbol, timeframe]);
+
   useEffect(() => {
     const series = candleSeriesRef.current;
     const chart = chartRef.current;
@@ -165,6 +285,9 @@ export default function Chart({
 
     if (!formatted.length) {
       series.setData([]);
+      if (zoneTopSeriesRef.current) zoneTopSeriesRef.current.setData([]);
+      if (zoneBottomSeriesRef.current) zoneBottomSeriesRef.current.setData([]);
+      if (breakSeriesRef.current) breakSeriesRef.current.setData([]);
       return;
     }
 
@@ -211,12 +334,99 @@ export default function Chart({
       addLine(r, `R${i + 1}`, "#ffd76a", 1, 2);
     });
 
+    const zoneStyle = lineStyleFromSignalState(signalState);
+    const zonePrefix = zoneLabelPrefix(signalState);
+    const colors = zoneColors(signalState);
+
+    addLine(zoneLow, `${zonePrefix} LOW`, colors.line, 2, zoneStyle);
+    addLine(zoneHigh, `${zonePrefix} HIGH`, colors.line, 2, zoneStyle);
+    addLine(breakLevel, "BREAK LEVEL", "#ffb86b", 2, 1);
+
     addLine(entry, "ENTRY", "#2dffb4", 2, 0);
     addLine(sl, "SL", "#ff5f8a", 2, 0);
     addLine(tp, "TP", "#ffd76a", 2, 0);
     addLine(tp1, "TP1", "#8affc1", 2, 1);
     addLine(tp2, "TP2", "#ffe082", 2, 1);
-  }, [supports, resistances, entry, sl, tp, tp1, tp2, symbol, timeframe]);
+  }, [
+    supports,
+    resistances,
+    entry,
+    sl,
+    tp,
+    tp1,
+    tp2,
+    zoneLow,
+    zoneHigh,
+    breakLevel,
+    signalState,
+    symbol,
+    timeframe,
+  ]);
+
+  useEffect(() => {
+    const zoneTopSeries = zoneTopSeriesRef.current;
+    const zoneBottomSeries = zoneBottomSeriesRef.current;
+    const breakSeries = breakSeriesRef.current;
+
+    const formatted = (Array.isArray(candles) ? candles : [])
+      .map(normalizeCandle)
+      .filter(Boolean);
+
+    if (!formatted.length) {
+      if (zoneTopSeries) zoneTopSeries.setData([]);
+      if (zoneBottomSeries) zoneBottomSeries.setData([]);
+      if (breakSeries) breakSeries.setData([]);
+      return;
+    }
+
+    const firstTime = formatted[0]?.time ?? null;
+    const lastTime = formatted[formatted.length - 1]?.time ?? null;
+
+    const top = safeNumber(zoneHigh);
+    const bottom = safeNumber(zoneLow);
+    const breakLvl = safeNumber(breakLevel);
+
+    const colors = zoneColors(signalState);
+
+    if (zoneTopSeries) {
+      try {
+        zoneTopSeries.applyOptions({ color: colors.line });
+      } catch {}
+    }
+    if (zoneBottomSeries) {
+      try {
+        zoneBottomSeries.applyOptions({ color: colors.line });
+      } catch {}
+    }
+
+    if (top !== null && firstTime !== null && lastTime !== null && zoneTopSeries) {
+      zoneTopSeries.setData([
+        { time: firstTime, value: top },
+        { time: lastTime, value: top },
+      ]);
+    } else if (zoneTopSeries) {
+      zoneTopSeries.setData([]);
+    }
+
+    if (bottom !== null && firstTime !== null && lastTime !== null && zoneBottomSeries) {
+      zoneBottomSeries.setData([
+        { time: firstTime, value: bottom },
+        { time: lastTime, value: bottom },
+      ]);
+    } else if (zoneBottomSeries) {
+      zoneBottomSeries.setData([]);
+    }
+
+    if (breakLvl !== null && firstTime !== null && lastTime !== null && breakSeries) {
+      breakSeries.setData([
+        { time: firstTime, value: breakLvl },
+        { time: lastTime, value: breakLvl },
+      ]);
+    } else if (breakSeries) {
+      breakSeries.setData([]);
+    }
+  }, [candles, zoneLow, zoneHigh, breakLevel, signalState]);
+
   return (
     <div
       ref={containerRef}
@@ -230,4 +440,4 @@ export default function Chart({
       }}
     />
   );
-}    
+}
