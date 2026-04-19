@@ -4,3 +4,4 @@ pydantic
 requests
 python-dotenv
 aiohttp
+psycopg2-binary
