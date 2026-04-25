@@ -173,6 +173,7 @@ HTF_CANDIDATES: Dict[str, List[str]] = {
 LIVE_CACHE: Dict[str, Dict[str, Any]] = {}
 ACTIVE_TRADES: Dict[str, Dict[str, Any]] = {}
 TRADE_HISTORY: List[Dict[str, Any]] = []
+LAST_TRADE_ACTION: Dict[str, str] = {}
 
 RISK_STATE: Dict[str, Any] = {
     "day_key": None,
@@ -3030,6 +3031,7 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
 
     # Attach ENTER_NOW / WAIT / SKIP decision
     signal = attach_trade_action(signal, context, entry_data)
+    
 
     if hold_reason:
         signal = {
@@ -3061,7 +3063,33 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
             "trade_action": signal.get("trade_action", "SKIP"),
             "action_message": signal.get("action_message", "Signal confidence is below minimum. Skip this trade."),
         }
+    action_key = f"{symbol}:{timeframe}"
+    previous_action = LAST_TRADE_ACTION.get(action_key)
+    current_action = signal.get("trade_action", "NONE")
 
+    if (
+        emit_telegram
+        and signal.get("direction") in ("BUY", "SELL")
+        and current_action == "ENTER_NOW"
+        and previous_action in ("WAIT", "SKIP")
+    ):
+        await maybe_send_telegram(
+             key=f"action_changed:{symbol}:{timeframe}:{current_action}",
+             min_gap_sec=60,
+             text=(
+                 f"🚨 ENTER NOW ALERT — {symbol} ({timeframe})\n\n"
+                 f"Previous action: {previous_action}\n"
+                 f"Now: ENTER_NOW\n\n"
+                 f"Direction: {signal.get('direction')}\n"
+                 f"Entry: {signal.get('entry')}\n"
+                 f"SL: {signal.get('sl')}\n"
+                 f"TP1: {signal.get('tp1')}\n"
+                 f"TP2: {signal.get('tp2')}\n\n"
+                 f"{signal.get('action_message', '')}"
+             ),
+        )
+
+    LAST_TRADE_ACTION[action_key] = current_action
     if emit_telegram:
         await maybe_emit_market_messages(symbol, timeframe, context, signal)
 
