@@ -144,6 +144,17 @@ ENTRY_RUNAWAY_LIMIT_ATR = 0.35
 CONFIRMATION_CANDLE_MAX_BODY_ATR = 1.10
 
 # =========================================================
+# TRADE ACTION DECISION SYSTEM
+# =========================================================
+ENTER_NOW_MIN_CONFIDENCE = 72
+ENTER_NOW_MIN_ENTRY_CONFIDENCE = 68
+WAIT_MIN_CONFIDENCE = 58
+
+EXTREME_RANGE_LOOKBACK = 80
+BOTTOM_ZONE_RATIO = 0.25
+TOP_ZONE_RATIO = 0.75
+
+# =========================================================
 # TIMEFRAME FETCH CANDIDATES
 # =========================================================
 HTF_CANDIDATES: Dict[str, List[str]] = {
@@ -217,7 +228,9 @@ class AnalyzeRequest(BaseModel):
 class ScanRequest(BaseModel):
     timeframe: str = ENTRY_TF
     symbols: List[str] = ["R_10", "R_25", "R_50", "R_75", "R_100"]
- # =========================================================
+
+
+# =========================================================
 # BASIC HELPERS
 # =========================================================
 def _today_key() -> str:
@@ -284,8 +297,6 @@ def safe_int(x: Any, fallback: int = 0) -> int:
         return int(x)
     except Exception:
         return fallback
-
-
 def _requested_chart_tf(raw_tf: Optional[str]) -> str:
     tf = (raw_tf or ENTRY_TF).strip()
     return tf if tf in ALLOWED_TFS else ENTRY_TF
@@ -510,6 +521,8 @@ def build_live_trade_tracker(trade: Dict[str, Any], current_price: float) -> Dic
         "quality_stars": trade.get("quality_stars"),
         "entry_instruction": trade.get("entry_instruction"),
         "entry_timing": trade.get("entry_timing"),
+        "trade_action": trade.get("trade_action"),
+        "action_message": trade.get("action_message"),
     }
 
 
@@ -544,80 +557,132 @@ def build_daily_market_outlook(ranked_rows: List[Dict[str, Any]]) -> Dict[str, A
         "area_of_interest": best.get("area_of_interest", "-"),
         "preferred_setup": best.get("preferred_setup", "-"),
         "note": note,
+    }  
+# =========================================================
+# TRADE ACTION DECISION (NEW LOGIC YOU WANTED)
+# =========================================================
+def detect_extreme_position(candles: List[Dict[str, float]]) -> Dict[str, bool]:
+    """
+    Detect if price is at extreme top or bottom of recent range.
+    This helps avoid selling bottom / buying top.
+    """
+    if len(candles) < EXTREME_RANGE_LOOKBACK:
+        return {"is_bottom": False, "is_top": False}
+
+    recent = candles[-EXTREME_RANGE_LOOKBACK:]
+    highs = [safe_float(c["high"], 0.0) for c in recent]
+    lows = [safe_float(c["low"], 0.0) for c in recent]
+
+    highest = max(highs)
+    lowest = min(lows)
+    last_close = safe_float(recent[-1]["close"], 0.0)
+
+    range_size = highest - lowest
+    if range_size == 0:
+        return {"is_bottom": False, "is_top": False}
+
+    position = (last_close - lowest) / range_size
+
+    return {
+        "is_bottom": position <= BOTTOM_ZONE_RATIO,
+        "is_top": position >= TOP_ZONE_RATIO,
     }
 
 
-def quality_grade_from_signal(
+def decide_trade_action(
+    signal: Dict[str, Any],
     context: Dict[str, Any],
-    setup_reason: str,
-    confidence: int,
-) -> Dict[str, Any]:
-    trend_strength = float(context.get("trend_strength") or 0.0)
-    reversal_risk = context.get("reversal_risk", "LOW")
+    entry_data: List[Dict[str, float]],
+) -> Dict[str, str]:
+    """
+    This is your NEW brain:
+    - ENTER NOW
+    - WAIT
+    - SKIP TRADE
+    """
+
+    direction = signal.get("direction")
+    confidence = int(signal.get("confidence", 0))
+    entry_conf = int(signal.get("entry_confidence", 0))
     market_state = context.get("market_state", "")
-    bias = context.get("bias", "NEUTRAL")
+    reversal_risk = context.get("reversal_risk", "LOW")
 
-    score = int(confidence)
+    extremes = detect_extreme_position(entry_data)
 
-    if market_state == "TRENDING CLEAN":
-        score += 6
-    elif market_state == "TRENDING PULLBACK":
-        score += 3
-    elif market_state == "WEAK TREND":
-        score -= 6
+    # =========================
+    # 1. HARD BLOCK (SKIP)
+    # =========================
+    if direction == "SELL" and extremes["is_bottom"]:
+        return {
+            "action": "SKIP",
+            "message": "⚠️ SELL at bottom detected → Avoid trade"
+        }
 
-    if reversal_risk == "LOW":
-        score += 2
-    elif reversal_risk == "MEDIUM":
-        score -= 5
-    elif reversal_risk == "HIGH":
-        score -= 12
+    if direction == "BUY" and extremes["is_top"]:
+        return {
+            "action": "SKIP",
+            "message": "⚠️ BUY at top detected → Avoid trade"
+        }
 
-    if trend_strength >= 0.20:
-        score += 5
-    elif trend_strength >= 0.12:
-        score += 2
+    if reversal_risk == "HIGH":
+        return {
+            "action": "SKIP",
+            "message": "⚠️ High reversal risk → Skip trade"
+        }
 
-    if "retest" in setup_reason:
-        score += 4
-    if "confirmed" in setup_reason:
-        score += 4
-    if "breakout" in setup_reason:
-        score += 2
-    if "rejection" in setup_reason:
-        score += 3
-    if "sniper" in setup_reason:
-        score += 2
+    # =========================
+    # 2. STRONG ENTRY (ENTER NOW)
+    # =========================
+    if (
+        confidence >= ENTER_NOW_MIN_CONFIDENCE
+        and entry_conf >= ENTER_NOW_MIN_ENTRY_CONFIDENCE
+        and market_state == "TRENDING CLEAN"
+    ):
+        return {
+            "action": "ENTER_NOW",
+            "message": "🔥 Strong setup → Enter immediately"
+        }
 
-    if bias == "NEUTRAL":
-        score -= 10
+    # =========================
+    # 3. MEDIUM (WAIT)
+    # =========================
+    if confidence >= WAIT_MIN_CONFIDENCE:
+        return {
+            "action": "WAIT",
+            "message": "⏳ Wait for confirmation / retest"
+        }
 
-    score = max(0, min(100, int(round(score))))
-
-    if score >= 88:
-        grade = "A+"
-        stars = "⭐⭐⭐⭐⭐"
-    elif score >= 80:
-        grade = "A"
-        stars = "⭐⭐⭐⭐"
-    elif score >= 72:
-        grade = "B+"
-        stars = "⭐⭐⭐⭐"
-    elif score >= 64:
-        grade = "B"
-        stars = "⭐⭐⭐"
-    elif score >= 56:
-        grade = "C"
-        stars = "⭐⭐"
-    else:
-        grade = "D"
-        stars = "⭐"
-
+    # =========================
+    # 4. DEFAULT SKIP
+    # =========================
     return {
-        "quality_score": score,
-        "quality_grade": grade,
-        "quality_stars": stars,
-    }   
+        "action": "SKIP",
+        "message": "❌ Weak setup → Do not take trade"
+    }
+
+
+def attach_trade_action(
+    signal: Dict[str, Any],
+    context: Dict[str, Any],
+    entry_data: List[Dict[str, float]],
+) -> Dict[str, Any]:
+    """
+    Adds action decision into signal output
+    """
+
+    if signal.get("direction") not in ("BUY", "SELL"):
+        signal["trade_action"] = "NONE"
+        signal["action_message"] = "No trade setup"
+        return signal
+
+    decision = decide_trade_action(signal, context, entry_data)
+
+    signal["trade_action"] = decision["action"]
+    signal["action_message"] = decision["message"]
+
+    return signal
+
+
 # =========================================================
 # TELEGRAM / PERFORMANCE
 # =========================================================
@@ -648,6 +713,8 @@ def build_signal_message(symbol: str, timeframe: str, signal: Dict[str, Any]) ->
     quality_stars = signal.get("quality_stars", "")
     entry_instruction = signal.get("entry_instruction", "")
     entry_timing = signal.get("entry_timing", "")
+    action = signal.get("trade_action", "")
+    action_msg = signal.get("action_message", "")
 
     title = "🟢 BUY SETUP" if direction == "BUY" else "🔴 SELL SETUP"
 
@@ -655,6 +722,8 @@ def build_signal_message(symbol: str, timeframe: str, signal: Dict[str, Any]) ->
         f"{title} — {symbol} ({timeframe})\n\n"
         f"Quality: {quality_grade} {quality_stars}\n"
         f"Confidence: {confidence}%\n\n"
+        f"⚡ Action: {action}\n"
+        f"{action_msg}\n\n"
         f"Entry: {entry}\n"
         f"Stop Loss: {sl}\n\n"
         f"Execution:\n"
@@ -664,9 +733,7 @@ def build_signal_message(symbol: str, timeframe: str, signal: Dict[str, Any]) ->
         f"Targets:\n"
         f"TP1: {tp1}\n"
         f"TP2: {tp2}\n"
-    )
-
-
+    )  
 def build_briefing_message(symbol: str, timeframe: str, briefing: Dict[str, Any]) -> str:
     return (
         f"📊 MARKET UPDATE — {symbol} ({timeframe})\n\n"
@@ -758,6 +825,8 @@ def _weekly_performance() -> Dict[str, Any]:
         "wins": wins,
         "losses": losses,
     }
+
+
 # =========================================================
 # INDICATORS
 # =========================================================
@@ -856,8 +925,6 @@ def bearish_engulfing(prev: Dict[str, float], curr: Dict[str, float]) -> bool:
         and is_bearish(curr)
         and safe_float(curr["close"], 0.0) < safe_float(prev["low"], 0.0)
     )
-
-
 def strong_displacement(candle: Dict[str, float], atr_value: float, direction: str) -> bool:
     if atr_value <= 0:
         return False
@@ -1089,8 +1156,6 @@ def trend_alignment_score(
     if monthly_trend == desired:
         score += 2
     return score
-
-
 def get_recent_local_high(candles: List[Dict[str, float]], lookback: int = 4) -> Optional[float]:
     if len(candles) < lookback + 1:
         return None
@@ -1140,6 +1205,8 @@ def get_trend_memory(candles: List[Dict[str, float]]) -> Dict[str, Any]:
         "ema20": ema20_now,
         "ema50": ema50_now,
     }
+
+
 # =========================================================
 # SWINGS / STRUCTURE / ZONES / CONTEXT
 # =========================================================
@@ -1288,8 +1355,6 @@ def reaction_zones(
         "nearest_support": nearest_support,
         "nearest_resistance": nearest_resistance,
     }
-
-
 def micro_reaction_zones(candles: List[Dict[str, float]], atr_value: float) -> Dict[str, Any]:
     return reaction_zones(
         candles=candles,
@@ -1495,6 +1560,8 @@ def pick_best_trade_zone(
             best_zone = z
 
     return best_zone
+
+
 # =========================================================
 # CONTINUATION / AOI SELECTION
 # =========================================================
@@ -1541,8 +1608,6 @@ def detect_continuation_base(
         "touches": 1,
         "kind": "continuation_base",
     }
-
-
 def pick_closest_actionable_zone(
     direction: str,
     classic_zones: Dict[str, Any],
@@ -1727,6 +1792,8 @@ def detect_reversal_risk(
         return "MEDIUM"
 
     return "LOW"
+
+
 def build_market_context(
     entry_data: List[Dict[str, float]],
     tf15_data: List[Dict[str, float]],
@@ -1804,7 +1871,6 @@ def build_market_context(
         current_price=current_price,
         atr_value=atr_value,
     )
-
     if combined_bias == "UP":
         aoi = pick_closest_actionable_zone(
             "BUY", zones, micro_zones, ema_pullback_buy, continuation_buy_zone, current_price, atr_value
@@ -2001,6 +2067,8 @@ def score_entry_quality(
         score -= 8
 
     return max(0, min(100, int(score)))
+
+
 # =========================================================
 # TRADE SETUP DETECTION
 # =========================================================
@@ -2057,27 +2125,19 @@ def bars_since_zone_touch(
         if touched:
             return len(recent) - 1 - idx
 
-    return None
-
-
-def select_targets(
-    direction: str,
-    entry: float,
-    zones: Dict[str, Any],
-    pools: Dict[str, Any],
-    min_distance: float,
-) -> Dict[str, Optional[float]]:
-    targets: List[float] = []
+    return None    
+def select_targets(direction, entry, zones, pools, min_distance):
+    targets = []
 
     if direction == "BUY":
         for z in zones.get("resistances", []):
-            lvl = safe_float(z["level"], None)
-            if lvl is not None and lvl > entry:
+            lvl = safe_float(z.get("level"), None)
+            if lvl and lvl > entry:
                 targets.append(lvl)
 
         for p in pools.get("high_pools", []):
-            lvl = safe_float(p["level"], None)
-            if lvl is not None and lvl > entry:
+            lvl = safe_float(p.get("level"), None)
+            if lvl and lvl > entry:
                 targets.append(lvl)
 
         targets = sorted(set(round(x, 5) for x in targets))
@@ -2093,13 +2153,13 @@ def select_targets(
         return {"tp1": tp1, "tp2": tp2}
 
     for z in zones.get("supports", []):
-        lvl = safe_float(z["level"], None)
-        if lvl is not None and lvl < entry:
+        lvl = safe_float(z.get("level"), None)
+        if lvl and lvl < entry:
             targets.append(lvl)
 
     for p in pools.get("low_pools", []):
-        lvl = safe_float(p["level"], None)
-        if lvl is not None and lvl < entry:
+        lvl = safe_float(p.get("level"), None)
+        if lvl and lvl < entry:
             targets.append(lvl)
 
     targets = sorted(set(round(x, 5) for x in targets), reverse=True)
@@ -2161,6 +2221,7 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         return {"direction": "HOLD", "reason": "ema_unavailable"}
 
     if combined_bias == "UP":
+        direction = "BUY"
         align_score = trend_alignment_score(
             trend_info.get("trend", "SIDEWAYS"),
             trend_15m.get("trend", "SIDEWAYS"),
@@ -2170,6 +2231,7 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
             trend_monthly.get("trend", "SIDEWAYS"),
             "UP",
         )
+
         if align_score < MIN_TREND_ALIGNMENT_SCORE:
             return {"direction": "HOLD", "reason": "buy_alignment_too_weak"}
 
@@ -2208,13 +2270,14 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         if not (rejection_confirm or breakout_confirm):
             return {"direction": "HOLD", "reason": "buy_confirmation_missing"}
 
-        smart_entry = compute_smart_entry("BUY", last_close, zone, atr_value, breakout_confirm)
+        entry = compute_smart_entry("BUY", last_close, zone, atr_value, breakout_confirm)
 
-        if entry_too_far_from_zone_mid(smart_entry, zone, atr_value):
+        if entry_too_far_from_zone_mid(entry, zone, atr_value):
             return {"direction": "HOLD", "reason": "buy_far_from_zone_mid"}
 
         swing_low = safe_float(structure.get("last_swing_low"), safe_float(zone["low"], 0.0))
         local_low = safe_float(get_recent_local_low(entry_data, 4), safe_float(zone["low"], 0.0))
+
         sl_anchor = min(
             safe_float(zone["low"], 0.0),
             swing_low,
@@ -2222,15 +2285,16 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
             safe_float(last["low"], 0.0),
             safe_float(prev["low"], 0.0),
         )
+
         sl = sl_anchor - atr_value * SL_BUFFER_ATR
-        entry = smart_entry
         risk = entry - sl
 
         if risk <= 0:
             return {"direction": "HOLD", "reason": "invalid_buy_risk"}
 
-        targets = select_targets("BUY", entry, zones, pools, min_distance=risk * MIN_RR)
+        targets = select_targets("BUY", entry, zones, pools, risk * MIN_RR)
         tp2 = targets.get("tp2")
+
         if tp2 is None:
             return {"direction": "HOLD", "reason": "no_buy_target"}
         if not enough_room_to_run("BUY", entry, tp2, atr_value):
@@ -2262,6 +2326,7 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
             "rr_preview": rr,
         }
 
+    direction = "SELL"
     align_score = trend_alignment_score(
         trend_info.get("trend", "SIDEWAYS"),
         trend_15m.get("trend", "SIDEWAYS"),
@@ -2271,10 +2336,12 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         trend_monthly.get("trend", "SIDEWAYS"),
         "DOWN",
     )
+
     if align_score < MIN_TREND_ALIGNMENT_SCORE:
         return {"direction": "HOLD", "reason": "sell_alignment_too_weak"}
 
     zone = context.get("watch_sell_zone") or context.get("best_sell_zone") or context.get("ema_pullback_sell_zone")
+
     if not zone:
         return {"direction": "HOLD", "reason": "no_sell_aoi"}
     if ema20 >= ema50:
@@ -2309,13 +2376,14 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
     if not (rejection_confirm or breakout_confirm):
         return {"direction": "HOLD", "reason": "sell_confirmation_missing"}
 
-    smart_entry = compute_smart_entry("SELL", last_close, zone, atr_value, breakout_confirm)
+    entry = compute_smart_entry("SELL", last_close, zone, atr_value, breakout_confirm)
 
-    if entry_too_far_from_zone_mid(smart_entry, zone, atr_value):
+    if entry_too_far_from_zone_mid(entry, zone, atr_value):
         return {"direction": "HOLD", "reason": "sell_far_from_zone_mid"}
 
     swing_high = safe_float(structure.get("last_swing_high"), safe_float(zone["high"], 0.0))
     local_high = safe_float(get_recent_local_high(entry_data, 4), safe_float(zone["high"], 0.0))
+
     sl_anchor = max(
         safe_float(zone["high"], 0.0),
         swing_high,
@@ -2323,15 +2391,16 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         safe_float(last["high"], 0.0),
         safe_float(prev["high"], 0.0),
     )
+
     sl = sl_anchor + atr_value * SL_BUFFER_ATR
-    entry = smart_entry
     risk = sl - entry
 
     if risk <= 0:
         return {"direction": "HOLD", "reason": "invalid_sell_risk"}
 
-    targets = select_targets("SELL", entry, zones, pools, min_distance=risk * MIN_RR)
+    targets = select_targets("SELL", entry, zones, pools, risk * MIN_RR)
     tp2 = targets.get("tp2")
+
     if tp2 is None:
         return {"direction": "HOLD", "reason": "no_sell_target"}
     if not enough_room_to_run("SELL", entry, tp2, atr_value):
@@ -2362,6 +2431,74 @@ def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, An
         "entry_timing": entry_timing,
         "rr_preview": rr,
     }
+def quality_grade_from_signal(context: Dict[str, Any], setup_reason: str, confidence: int) -> Dict[str, Any]:
+    trend_strength = float(context.get("trend_strength") or 0.0)
+    reversal_risk = context.get("reversal_risk", "LOW")
+    market_state = context.get("market_state", "")
+    bias = context.get("bias", "NEUTRAL")
+
+    score = int(confidence)
+
+    if market_state == "TRENDING CLEAN":
+        score += 6
+    elif market_state == "TRENDING PULLBACK":
+        score += 3
+    elif market_state == "WEAK TREND":
+        score -= 6
+
+    if reversal_risk == "LOW":
+        score += 2
+    elif reversal_risk == "MEDIUM":
+        score -= 5
+    elif reversal_risk == "HIGH":
+        score -= 12
+
+    if trend_strength >= 0.20:
+        score += 5
+    elif trend_strength >= 0.12:
+        score += 2
+
+    if "retest" in setup_reason:
+        score += 4
+    if "confirmed" in setup_reason:
+        score += 4
+    if "breakout" in setup_reason:
+        score += 2
+    if "rejection" in setup_reason:
+        score += 3
+    if "sniper" in setup_reason:
+        score += 2
+
+    if bias == "NEUTRAL":
+        score -= 10
+
+    score = max(0, min(100, int(round(score))))
+
+    if score >= 88:
+        grade = "A+"
+        stars = "⭐⭐⭐⭐⭐"
+    elif score >= 80:
+        grade = "A"
+        stars = "⭐⭐⭐⭐"
+    elif score >= 72:
+        grade = "B+"
+        stars = "⭐⭐⭐⭐"
+    elif score >= 64:
+        grade = "B"
+        stars = "⭐⭐⭐"
+    elif score >= 56:
+        grade = "C"
+        stars = "⭐⭐"
+    else:
+        grade = "D"
+        stars = "⭐"
+
+    return {
+        "quality_score": score,
+        "quality_grade": grade,
+        "quality_stars": stars,
+    }
+
 def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     if setup.get("direction") not in ("BUY", "SELL"):
         return {"direction": "HOLD", "confidence": 0, "reason": setup.get("reason", "no_setup")}
@@ -2387,9 +2524,6 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
     reversal_risk = context.get("reversal_risk", "LOW")
     zone = setup.get("zone")
 
-    # -------------------------------
-    # 1) Setup confidence
-    # -------------------------------
     setup_confidence = 48
 
     if alignment_score >= 8:
@@ -2429,9 +2563,6 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
 
     setup_confidence = max(0, min(100, int(round(setup_confidence))))
 
-    # -------------------------------
-    # 2) Entry confidence
-    # -------------------------------
     entry_confidence = score_entry_quality(
         direction=direction,
         entry=entry,
@@ -2444,28 +2575,22 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
         last_candle=context.get("last_entry_candle") or {},
     )
 
-    # extra penalties for late / stretched location
     if zone and atr_value > 0 and entry_too_far_from_zone_mid(entry, zone, atr_value):
         entry_confidence -= 8
-
     if atr_value > 0 and too_close_to_tp2_after_entry(direction, entry, tp2, atr_value):
         entry_confidence -= 10
-
     if atr_value > 0 and not_enough_remaining_room(direction, entry, tp2, atr_value):
         entry_confidence -= 8
 
     entry_confidence = max(0, min(100, int(round(entry_confidence))))
 
-    # -------------------------------
-    # 3) Final confidence
-    # -------------------------------
     confidence = int(round((setup_confidence * 0.6) + (entry_confidence * 0.4)))
     confidence = max(0, min(94, confidence))
 
     quality = quality_grade_from_signal(context, setup["reason"], confidence)
     tp1_r_multiple = abs(float(tp1) - entry) / max(1e-9, risk)
 
-    return {
+    signal = {
         "direction": direction,
         "entry": round(entry, 5),
         "sl": round(sl, 5),
@@ -2499,15 +2624,17 @@ def build_signal_from_setup(setup: Dict[str, Any], context: Dict[str, Any]) -> D
         },
     }
 
-
+    return signal
 # =========================================================
 # TRADE MANAGEMENT
 # =========================================================
 def trail_stop_suggestion(candles_tf: List[Dict[str, float]], direction: str, atr_value: float) -> float:
     data = candles_tf[-TRAIL_LOOKBACK:] if len(candles_tf) >= TRAIL_LOOKBACK else candles_tf
     buf = atr_value * TRAIL_BUFFER_ATR
+
     if direction == "BUY":
         return min(safe_float(c["low"], 0.0) for c in data) - buf
+
     return max(safe_float(c["high"], 0.0) for c in data) + buf
 
 
@@ -2544,6 +2671,7 @@ async def open_new_trade(symbol: str, timeframe: str, signal: Dict[str, Any]) ->
         min_gap_sec=TELEGRAM_MIN_READY_GAP_SEC,
         text=build_signal_message(symbol, timeframe, trade),
     )
+
     return trade
 
 
@@ -2580,6 +2708,7 @@ async def close_trade(symbol: str, timeframe: str, trade: Dict[str, Any], outcom
         min_gap_sec=5,
         text=build_closed_message(symbol, timeframe, trade, outcome, price),
     )
+
     return trade
 
 
@@ -2614,6 +2743,7 @@ async def manage_active_trade(
             upsert_trade(trade)
         except Exception as e:
             print("manage_active_trade early db update error:", e)
+
         return {"signal": trade, "active": True, "actions": actions}
 
     if direction == "BUY":
@@ -2622,9 +2752,11 @@ async def manage_active_trade(
             trade["tp1_hit_at"] = _now_ts()
             trade["tp1_price"] = round(tp1, 5)
             actions.append({"type": "TP1_HIT"})
+
             if BE_AFTER_TP1:
                 trade["sl"] = entry
                 actions.append({"type": "MOVE_SL", "to": round(entry, 5)})
+
             await maybe_send_telegram(
                 key=f"tp1:{symbol}:{timeframe}:{trade['trade_id']}",
                 min_gap_sec=5,
@@ -2641,7 +2773,11 @@ async def manage_active_trade(
             }
 
         if last_low <= sl:
-            outcome = "TP1_ONLY" if trade.get("tp1_hit") and COUNT_TP1_AS_WIN else ("BE" if trade.get("tp1_hit") else "SL")
+            outcome = (
+                "TP1_ONLY"
+                if trade.get("tp1_hit") and COUNT_TP1_AS_WIN
+                else ("BE" if trade.get("tp1_hit") else "SL")
+            )
             closed = await close_trade(symbol, timeframe, trade, outcome, sl)
             return {
                 "closed_trade": closed,
@@ -2656,9 +2792,11 @@ async def manage_active_trade(
             trade["tp1_hit_at"] = _now_ts()
             trade["tp1_price"] = round(tp1, 5)
             actions.append({"type": "TP1_HIT"})
+
             if BE_AFTER_TP1:
                 trade["sl"] = entry
                 actions.append({"type": "MOVE_SL", "to": round(entry, 5)})
+
             await maybe_send_telegram(
                 key=f"tp1:{symbol}:{timeframe}:{trade['trade_id']}",
                 min_gap_sec=5,
@@ -2675,7 +2813,11 @@ async def manage_active_trade(
             }
 
         if last_high >= sl:
-            outcome = "TP1_ONLY" if trade.get("tp1_hit") and COUNT_TP1_AS_WIN else ("BE" if trade.get("tp1_hit") else "SL")
+            outcome = (
+                "TP1_ONLY"
+                if trade.get("tp1_hit") and COUNT_TP1_AS_WIN
+                else ("BE" if trade.get("tp1_hit") else "SL")
+            )
             closed = await close_trade(symbol, timeframe, trade, outcome, sl)
             return {
                 "closed_trade": closed,
@@ -2692,6 +2834,7 @@ async def manage_active_trade(
                 trade["sl"] = max(safe_float(trade["sl"], 0.0), trail)
             else:
                 trade["sl"] = min(safe_float(trade["sl"], 0.0), trail)
+
             actions.append({"type": "TRAIL_SUGGESTION", "to": round(trade["sl"], 5)})
 
     progress_pct = trade_progress_percent_fn(direction, entry, safe_float(trade["sl"], 0.0), tp2, last_close)
@@ -2703,6 +2846,8 @@ async def manage_active_trade(
         print("manage_active_trade db update error:", e)
 
     return {"signal": trade, "active": True, "actions": actions}
+
+
 # =========================================================
 # TELEGRAM SMART MARKET STATE + CORE
 # =========================================================
@@ -2713,12 +2858,14 @@ async def maybe_emit_market_messages(symbol: str, timeframe: str, context: Dict[
         state = "READY"
     else:
         market_state = context.get("market_state", "")
+
         if (
             context.get("bias") in ("UP", "DOWN")
             and context.get("area_of_interest") != "-"
             and market_state not in ("CHOPPY / NO-TRADE",)
         ):
             state = "WATCH"
+
         if context.get("reversal_risk") == "HIGH":
             state = "INVALIDATED"
 
@@ -2840,11 +2987,14 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
                 "max_active_total": MAX_ACTIVE_TOTAL,
                 "max_active_per_symbol": MAX_ACTIVE_PER_SYMBOL,
             }
+
             if managed.get("closed_trade"):
                 result["closed_trade"] = managed["closed_trade"]
+
             return result
 
         active_trade = ACTIVE_TRADES[key]
+
         return {
             "symbol": symbol,
             "timeframe": timeframe,
@@ -2865,6 +3015,7 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
         }
 
     hold_reason = ""
+
     if _active_total() >= MAX_ACTIVE_TOTAL:
         hold_reason = "max_active_trades"
     elif _active_symbol_count(symbol) >= MAX_ACTIVE_PER_SYMBOL:
@@ -2877,8 +3028,17 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
     setup = detect_trade_setup(entry_data, context)
     signal = build_signal_from_setup(setup, context)
 
+    # Attach ENTER_NOW / WAIT / SKIP decision
+    signal = attach_trade_action(signal, context, entry_data)
+
     if hold_reason:
-        signal = {"direction": "HOLD", "confidence": 0, "reason": hold_reason}
+        signal = {
+            "direction": "HOLD",
+            "confidence": 0,
+            "reason": hold_reason,
+            "trade_action": "NONE",
+            "action_message": "No new signal because risk/active-trade rules are blocking entries.",
+        }
     elif signal.get("direction") in ("BUY", "SELL") and int(signal.get("confidence", 0)) < MIN_CONFIDENCE_TO_OPEN:
         signal = {
             "direction": "HOLD",
@@ -2898,6 +3058,8 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
             "quality_score": signal.get("quality_score"),
             "quality_grade": signal.get("quality_grade"),
             "quality_stars": signal.get("quality_stars"),
+            "trade_action": signal.get("trade_action", "SKIP"),
+            "action_message": signal.get("action_message", "Signal confidence is below minimum. Skip this trade."),
         }
 
     if emit_telegram:
@@ -2905,6 +3067,7 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
 
     if manage_trade and signal.get("direction") in ("BUY", "SELL"):
         opened = await open_new_trade(symbol, timeframe, signal)
+
         return {
             "symbol": symbol,
             "timeframe": timeframe,
@@ -2966,8 +3129,10 @@ async def scan(req: ScanRequest):
                 manage_trade=False,
                 emit_telegram=False,
             )
+
             sig = res.get("signal", {})
             brief = res.get("briefing", {})
+
             rows.append({
                 "symbol": sym,
                 "direction": sig.get("direction", "HOLD"),
@@ -2981,9 +3146,13 @@ async def scan(req: ScanRequest):
                 "entry": sig.get("entry"),
                 "sl": sig.get("sl"),
                 "tp": sig.get("tp2", sig.get("tp")),
+                "tp1": sig.get("tp1"),
+                "tp2": sig.get("tp2"),
                 "entry_type": sig.get("entry_type", sig.get("mode", "")),
                 "entry_instruction": sig.get("entry_instruction"),
                 "entry_timing": sig.get("entry_timing"),
+                "trade_action": sig.get("trade_action"),
+                "action_message": sig.get("action_message"),
                 "active_trade": bool(res.get("active", False)),
                 "bias": brief.get("bias"),
                 "monthly_bias": brief.get("monthly_bias"),
@@ -2994,6 +3163,7 @@ async def scan(req: ScanRequest):
                 "preferred_setup": brief.get("preferred_setup"),
                 "reversal_risk": brief.get("reversal_risk"),
             })
+
         except Exception as e:
             rows.append({
                 "symbol": sym,
@@ -3008,9 +3178,13 @@ async def scan(req: ScanRequest):
                 "entry": None,
                 "sl": None,
                 "tp": None,
+                "tp1": None,
+                "tp2": None,
                 "entry_type": "",
                 "entry_instruction": None,
                 "entry_timing": None,
+                "trade_action": None,
+                "action_message": None,
                 "active_trade": False,
                 "bias": None,
                 "monthly_bias": None,
@@ -3025,6 +3199,7 @@ async def scan(req: ScanRequest):
     rows.sort(
         key=lambda x: (
             x.get("direction") in ("BUY", "SELL"),
+            x.get("trade_action") == "ENTER_NOW",
             x.get("confidence", 0),
             x.get("market_state") == "TRENDING CLEAN",
         ),
@@ -3046,6 +3221,7 @@ async def scan(req: ScanRequest):
 async def live_market(symbol: str = "R_10", timeframe: str = ENTRY_TF) -> Dict[str, Any]:
     chart_tf = _requested_chart_tf(timeframe)
     app_id = os.getenv("DERIV_APP_ID", "1089")
+
     candles = await _cached_fetch_candles(app_id, symbol, chart_tf, 320)
 
     if not candles:
@@ -3058,6 +3234,7 @@ async def live_market(symbol: str = "R_10", timeframe: str = ENTRY_TF) -> Dict[s
 
     trade = ACTIVE_TRADES.get(_trade_key(symbol, chart_tf))
     live_tracker = None
+
     if trade:
         live_tracker = build_live_trade_tracker(trade, safe_float(last["close"], 0.0))
 
@@ -3081,8 +3258,10 @@ async def live_market(symbol: str = "R_10", timeframe: str = ENTRY_TF) -> Dict[s
 async def history(symbol: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
     limit = max(1, min(int(limit), 500))
     items = TRADE_HISTORY
+
     if symbol:
         items = [t for t in items if t.get("symbol") == symbol.strip()]
+
     return {"count": len(items[-limit:]), "items": items[-limit:]}
 
 
@@ -3135,12 +3314,14 @@ async def websocket_live(ws: WebSocket):
                 last = candles[-1]
                 last_close = safe_float(last["close"], 0.0)
                 last_time = last.get("time") or last.get("epoch") or last.get("t")
+
                 entry_data = closed_candles(candles)
                 atr_value = float(atr_last(entry_data, ATR_PERIOD) or 0.0)
                 zones = reaction_zones(entry_data, atr_value)
 
                 trade = ACTIVE_TRADES.get(_trade_key(symbol, timeframe))
                 live_tracker = None
+
                 if trade:
                     live_tracker = build_live_trade_tracker(trade, last_close)
 
