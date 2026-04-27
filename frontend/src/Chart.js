@@ -1,6 +1,6 @@
 // frontend/src/Chart.js
 import React, { useEffect, useRef } from "react";
-import { createChart, CandlestickSeries} from "lightweight-charts";
+import { createChart, LineSeries, CandlestickSeries} from "lightweight-charts";
 
 function safeNumber(v) {
   const n = Number(v);
