@@ -1,9 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Chart from "./Chart";
-import { analyzeMarket, scanMarkets, fetchGlobalState, getBackendWebSocketUrl } from "./api";
+import {
+  analyzeMarket,
+  scanMarkets,
+  fetchGlobalState,
+  getBackendWebSocketUrl,
+  getBackendUrl,
+} from "./api";
 
 const VOLATILITY_OPTIONS = [
-  { symbol: "ALL", name: "All Markets" },
   { symbol: "R_10", name: "Volatility 10" },
   { symbol: "R_25", name: "Volatility 25" },
   { symbol: "R_50", name: "Volatility 50" },
@@ -21,8 +26,30 @@ const TIMEFRAMES = [
   { value: "4h", label: "4h" },
 ];
 
-const LS_KEY_STATE = "dex_bot_ui_state_v8";
-const LS_KEY_HISTORY = "dex_bot_history_v3";
+const TABS = [
+  "Overview",
+  "Signal",
+  "Lot Calculator",
+  "Active Trade",
+  "Daily Stats",
+  "Weekly Stats",
+  "Scanner",
+  "Chart",
+  "History",
+  "Health",
+];
+
+const LS_KEY_STATE = "dex_bot_smart_dashboard_v1";
+const LS_KEY_HISTORY = "dex_bot_history_v4";
+const LS_KEY_POINT_VALUES = "dex_bot_point_values_v1";
+
+const DEFAULT_POINT_VALUES = {
+  R_10: 1,
+  R_25: 1,
+  R_50: 1,
+  R_75: 1,
+  R_100: 1,
+};
 
 function safeNum(x, fallback = 0) {
   const n = Number(x);
@@ -34,10 +61,22 @@ function clamp(n, min, max) {
 }
 
 function fmt(x, digits = 5) {
-  if (x === null || x === undefined) return "-";
+  if (x === null || x === undefined || x === "") return "—";
   const n = Number(x);
   if (!Number.isFinite(n)) return String(x);
   return n.toFixed(digits);
+}
+
+function money(x) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return "—";
+  return `$${n.toFixed(2)}`;
+}
+
+function percent(x) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return "0%";
+  return `${n.toFixed(1)}%`;
 }
 
 function toIso(tsSec) {
@@ -59,10 +98,10 @@ function pickModeLabel(sig = {}) {
   return (
     sig.entry_type ||
     sig.entryType ||
+    sig.entry_timing ||
     sig.mode ||
     sig.type ||
     sig.path ||
-    (sig.bos_level ? "SNIPER" : "") ||
     ""
   );
 }
@@ -84,9 +123,35 @@ function formatOutcomeLabel(outcome) {
 function outcomeTone(outcome) {
   if (outcome === "TP2" || outcome === "TP1_ONLY") return "pillWin";
   if (outcome === "SL") return "pillLoss";
+  if (outcome === "BE") return "";
   return "";
 }
 
+function tradeActionTone(action) {
+  if (action === "ENTER_NOW") return "pillWin";
+  if (action === "SKIP") return "pillLoss";
+  if (action === "WAIT") return "fire";
+  return "";
+}
+
+function tradeActionLabel(action) {
+  if (action === "ENTER_NOW") return "✅ ENTER NOW";
+  if (action === "WAIT") return "⏳ WAIT";
+  if (action === "SKIP") return "❌ SKIP";
+  return "—";
+}
+
+function directionTone(direction) {
+  if (direction === "BUY") return "pillWin";
+  if (direction === "SELL") return "pillLoss";
+  return "";
+}
+
+function renderStrengthBar(score) {
+  const filled = Math.max(0, Math.min(10, Math.round(score)));
+  const empty = 10 - filled;
+  return "█".repeat(filled) + "░".repeat(empty);
+}
 function normalizeAlignment(raw) {
   const a =
     raw?.alignment ||
@@ -152,16 +217,37 @@ function normalizeBriefing(brief = {}) {
 }
 
 function normalizeWeeklyOutlook(weekly = {}) {
+  const total =
+    safeNum(weekly?.total_closed, null) ??
+    safeNum(weekly?.total, 0);
+
+  const wins = safeNum(weekly?.wins, 0);
+  const losses = safeNum(weekly?.losses, 0);
+  const breakevens = safeNum(weekly?.breakevens, 0);
+  const winRate =
+    weekly?.win_rate !== undefined
+      ? safeNum(weekly.win_rate, 0)
+      : total
+      ? (wins / total) * 100
+      : 0;
+
+  const lossRate =
+    weekly?.loss_rate !== undefined
+      ? safeNum(weekly.loss_rate, 0)
+      : total
+      ? (losses / total) * 100
+      : 0;
+
   return {
-    weekKey: weekly?.week_key ?? "-",
-    totalClosed: safeNum(weekly?.total_closed, 0),
-    wins: safeNum(weekly?.wins, 0),
-    losses: safeNum(weekly?.losses, 0),
+    weekKey: weekly?.week_key ?? weekly?.week ?? "-",
+    totalClosed: safeNum(total, 0),
+    wins,
+    losses,
     partials: safeNum(weekly?.partials, 0),
     fullWins: safeNum(weekly?.full_wins, 0),
-    breakevens: safeNum(weekly?.breakevens, 0),
-    winRate: safeNum(weekly?.win_rate, 0),
-    lossRate: safeNum(weekly?.loss_rate, 0),
+    breakevens,
+    winRate: Number(winRate.toFixed(1)),
+    lossRate: Number(lossRate.toFixed(1)),
   };
 }
 
@@ -199,13 +285,17 @@ function normalizeAnalyzeResponse(data) {
     sl: sig?.sl ?? null,
     tp: sig?.tp ?? null,
     tp1: sig?.tp1 ?? null,
-    tp2: sig?.tp2 ?? null,
+    tp2: sig?.tp2 ?? sig?.tp ?? null,
     tp1Hit: !!sig?.tp1_hit,
     tp1RMultiple: sig?.tp1_r_multiple ?? null,
     rMultiple: sig?.r_multiple ?? null,
     reason: sig?.reason ?? data?.reason ?? "—",
     price: data?.price ?? sig?.price ?? null,
     entryType: pickModeLabel(sig),
+    entryInstruction: sig?.entry_instruction ?? "",
+    entryTiming: sig?.entry_timing ?? "",
+    tradeAction: sig?.trade_action ?? "NONE",
+    actionMessage: sig?.action_message ?? "",
     qualityGrade: sig?.quality_grade ?? null,
     qualityStars: sig?.quality_stars ?? "",
     qualityScore: safeNum(sig?.quality_score ?? null, null),
@@ -219,65 +309,6 @@ function normalizeAnalyzeResponse(data) {
     dailyOutlook: data?.daily_outlook ?? null,
     raw: data,
     maxActive,
-  };
-}
-
-function makeHistoryItem({
-  symbol,
-  timeframe,
-  signal,
-  openedAt,
-  closedAt,
-  outcome,
-  closePrice,
-  weekKey,
-  dayKey,
-}) {
-  const entry = safeNum(signal?.entry, null);
-  const sl = safeNum(signal?.sl, null);
-  const tp = safeNum(signal?.tp2 ?? signal?.tp, null);
-  const tp1 = safeNum(signal?.tp1, null);
-  const direction = signal?.direction || "HOLD";
-
-  let rMult = null;
-  let tp1RMult = null;
-
-  if (entry !== null && sl !== null && tp !== null) {
-    const risk = Math.abs(entry - sl);
-    const reward = Math.abs(tp - entry);
-    if (risk > 0) rMult = reward / risk;
-  }
-
-  if (entry !== null && sl !== null && tp1 !== null) {
-    const risk = Math.abs(entry - sl);
-    const reward = Math.abs(tp1 - entry);
-    if (risk > 0) tp1RMult = reward / risk;
-  }
-
-  return {
-    id: `${symbol}-${timeframe}-${openedAt || Date.now()}-${Math.random().toString(16).slice(2)}`,
-    symbol,
-    timeframe,
-    direction,
-    confidence: safeNum(signal?.confidence, 0),
-    entry,
-    sl,
-    tp,
-    tp1,
-    tp2: safeNum(signal?.tp2 ?? signal?.tp, null),
-    openedAt: openedAt ?? null,
-    closedAt: closedAt ?? null,
-    outcome: outcome ?? "OPEN",
-    closePrice: closePrice ?? null,
-    rMult: rMult !== null ? Number(rMult.toFixed(2)) : null,
-    tp1RMult: tp1RMult !== null ? Number(tp1RMult.toFixed(2)) : null,
-    reason: signal?.reason ?? "—",
-    tp1Hit: !!signal?.tp1_hit,
-    entryType: pickModeLabel(signal),
-    qualityGrade: signal?.quality_grade ?? null,
-    qualityStars: signal?.quality_stars ?? "",
-    weekKey: weekKey ?? null,
-    dayKey: dayKey ?? null,
   };
 }
 
@@ -304,88 +335,122 @@ function normalizeBackendHistoryItem(t = {}) {
     reason: t.reason || "—",
     tp1Hit: !!t.tp1_hit,
     entryType: pickModeLabel(t),
+    entryInstruction: t.entry_instruction ?? "",
+    entryTiming: t.entry_timing ?? "",
+    tradeAction: t.trade_action ?? "NONE",
+    actionMessage: t.action_message ?? "",
     qualityGrade: t.quality_grade ?? null,
     qualityStars: t.quality_stars ?? "",
     weekKey: t.week_key ?? null,
     dayKey: t.day_key ?? null,
   };
 }
-function calcPerformance(items) {
-  const closed = items.filter((x) =>
+function calcStats(items, scope = "all") {
+  const now = new Date();
+  const todayKey = now.toISOString().slice(0, 10);
+
+  const getWeekKey = (d) => {
+    const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    const dayNum = date.getUTCDay() || 7;
+    date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+    const weekNo = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+    return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
+  };
+
+  const currentWeekKey = getWeekKey(now);
+
+  const scoped = items.filter((x) => {
+    const ts = x.closedAt || x.openedAt;
+    if (!ts) return scope === "all";
+    const d = new Date(Number(ts) * 1000);
+
+    if (scope === "today") {
+      return d.toISOString().slice(0, 10) === todayKey;
+    }
+
+    if (scope === "week") {
+      return getWeekKey(d) === currentWeekKey;
+    }
+
+    return true;
+  });
+
+  const closed = scoped.filter((x) =>
     x.outcome === "TP2" ||
     x.outcome === "TP1_ONLY" ||
     x.outcome === "BE" ||
     x.outcome === "SL"
   );
 
+  const open = scoped.filter((x) => x.outcome === "OPEN").length;
   const wins = closed.filter((x) => x.outcome === "TP2" || x.outcome === "TP1_ONLY").length;
   const losses = closed.filter((x) => x.outcome === "SL").length;
   const breakevens = closed.filter((x) => x.outcome === "BE").length;
+  const tp1Wins = closed.filter((x) => x.outcome === "TP1_ONLY").length;
+  const tp2Wins = closed.filter((x) => x.outcome === "TP2").length;
   const total = closed.length;
 
   const winRate = total ? (wins / total) * 100 : 0;
   const lossRate = total ? (losses / total) * 100 : 0;
-  const breakevenRate = total ? (breakevens / total) * 100 : 0;
 
   let sumR = 0;
   for (const t of closed) {
-    if (t.outcome === "TP2") sumR += t.rMult ?? 1;
-    if (t.outcome === "TP1_ONLY") sumR += t.tp1RMult ?? 0.7;
+    if (t.outcome === "TP2") sumR += safeNum(t.rMult, 1);
+    if (t.outcome === "TP1_ONLY") sumR += safeNum(t.tp1RMult, 0.7);
     if (t.outcome === "BE") sumR += 0;
     if (t.outcome === "SL") sumR -= 1;
   }
-  const avgR = total ? sumR / total : 0;
-
-  let bestWinStreak = 0;
-  let bestLoseStreak = 0;
-  let curW = 0;
-  let curL = 0;
-
-  for (const t of closed) {
-    if (t.outcome === "TP2" || t.outcome === "TP1_ONLY") {
-      curW += 1;
-      curL = 0;
-    } else if (t.outcome === "SL") {
-      curL += 1;
-      curW = 0;
-    } else if (t.outcome === "BE") {
-      curW = 0;
-      curL = 0;
-    }
-    bestWinStreak = Math.max(bestWinStreak, curW);
-    bestLoseStreak = Math.max(bestLoseStreak, curL);
-  }
-
-  const last30 = closed.slice(-30);
-  let last30R = 0;
-  for (const t of last30) {
-    if (t.outcome === "TP2") last30R += t.rMult ?? 1;
-    if (t.outcome === "TP1_ONLY") last30R += t.tp1RMult ?? 0.7;
-    if (t.outcome === "SL") last30R -= 1;
-  }
 
   return {
-    closedCount: total,
+    totalClosed: total,
+    open,
+    trades: scoped.length,
     wins,
     losses,
     breakevens,
+    tp1Wins,
+    tp2Wins,
     winRate: Number(winRate.toFixed(1)),
     lossRate: Number(lossRate.toFixed(1)),
-    breakevenRate: Number(breakevenRate.toFixed(1)),
     sumR: Number(sumR.toFixed(2)),
-    avgR: Number(avgR.toFixed(2)),
-    bestWinStreak,
-    bestLoseStreak,
-    last30Count: last30.length,
-    last30R: Number(last30R.toFixed(2)),
+    avgR: total ? Number((sumR / total).toFixed(2)) : 0,
   };
+}
+
+function getBestFromHistory(items, field) {
+  const counts = {};
+  for (const t of items) {
+    const key = t[field] || "Unknown";
+    counts[key] = (counts[key] || 0) + 1;
+  }
+
+  let best = "—";
+  let bestCount = 0;
+  for (const [k, v] of Object.entries(counts)) {
+    if (v > bestCount) {
+      best = k;
+      bestCount = v;
+    }
+  }
+  return best;
 }
 
 function computeStrength(row) {
   const conf = safeNum(row.confidence, 0);
+  const action = row.trade_action || row.tradeAction || "";
+  const direction = row.direction;
 
   const actionBonus =
-    row.direction === "BUY" || row.direction === "SELL" ? 0.8 : 0.2;
+    action === "ENTER_NOW"
+      ? 1.5
+      : action === "WAIT"
+      ? 0.6
+      : action === "SKIP"
+      ? -1.0
+      : direction === "BUY" || direction === "SELL"
+      ? 0.5
+      : 0;
 
   const stateBonus =
     row.market_state === "TRENDING CLEAN"
@@ -393,7 +458,7 @@ function computeStrength(row) {
       : row.market_state === "TRENDING PULLBACK"
       ? 0.7
       : row.market_state === "WEAK TREND"
-      ? 0.35
+      ? 0.25
       : 0.1;
 
   const riskPenalty =
@@ -403,16 +468,15 @@ function computeStrength(row) {
       ? -0.6
       : 0;
 
-  const confPart = (conf / 100) * 7;
-  const raw = confPart + actionBonus + stateBonus + riskPenalty;
+  const qualityBonus =
+    row.quality_grade === "A+" || row.quality_grade === "A"
+      ? 0.9
+      : row.quality_grade === "B+"
+      ? 0.5
+      : 0;
 
+  const raw = (conf / 100) * 7 + actionBonus + stateBonus + riskPenalty + qualityBonus;
   return clamp(raw, 0, 10);
-}
-
-function renderStrengthBar(score) {
-  const filled = Math.max(0, Math.min(10, Math.round(score)));
-  const empty = 10 - filled;
-  return "█".repeat(filled) + "░".repeat(empty);
 }
 
 function buildAiExplanation({
@@ -442,60 +506,6 @@ function buildAiExplanation({
   return lines.join(" ");
 }
 
-function getBestSetupFromHistory(items) {
-  const counts = {};
-  for (const t of items) {
-    const key = t.entryType || "Unknown";
-    counts[key] = (counts[key] || 0) + 1;
-  }
-  let best = "—";
-  let bestCount = 0;
-  for (const [k, v] of Object.entries(counts)) {
-    if (v > bestCount) {
-      best = k;
-      bestCount = v;
-    }
-  }
-  return best;
-}
-
-function getBestMarketFromHistory(items) {
-  const counts = {};
-  for (const t of items) {
-    const key = t.symbol || "Unknown";
-    counts[key] = (counts[key] || 0) + 1;
-  }
-  let best = "—";
-  let bestCount = 0;
-  for (const [k, v] of Object.entries(counts)) {
-    if (v > bestCount) {
-      best = k;
-      bestCount = v;
-    }
-  }
-  return best;
-}
-
-function getScannerSmartLabel(row = {}, idx = 0) {
-  const conf = safeNum(row.confidence, 0);
-  const active = !!row.active_trade;
-  const direction = row.direction;
-  const state = row.market_state || "";
-  const risk = row.reversal_risk || "";
-  const quality = row.quality_grade || "";
-
-  if (active) return { text: "LIVE TRADE", tone: "pillWin" };
-  if ((direction === "BUY" || direction === "SELL") && idx === 0 && conf >= 75) {
-    return { text: "TOP PICK", tone: "fire" };
-  }
-  if (quality === "A+" || quality === "A") return { text: "PREMIUM", tone: "pillWin" };
-  if (state === "TRENDING CLEAN" && conf >= 70) return { text: "TREND CLEAN", tone: "pillWin" };
-  if (state === "TRENDING PULLBACK" && conf >= 60) return { text: "PULLBACK", tone: "" };
-  if (risk === "HIGH") return { text: "RISKY", tone: "pillLoss" };
-  if (direction === "BUY" || direction === "SELL") return { text: "WATCH", tone: "" };
-  return { text: "WAIT", tone: "" };
-}
-
 function buildAiSentimentModel({
   ranked = [],
   dailyOutlook = null,
@@ -507,7 +517,10 @@ function buildAiSentimentModel({
   maxActiveTotal = 5,
 }) {
   const tradable = ranked.filter(
-    (r) => (r.direction === "BUY" || r.direction === "SELL") && safeNum(r.confidence, 0) > 0
+    (r) =>
+      (r.direction === "BUY" || r.direction === "SELL") &&
+      safeNum(r.confidence, 0) > 0 &&
+      r.trade_action !== "SKIP"
   );
 
   let score = 50;
@@ -542,19 +555,19 @@ function buildAiSentimentModel({
   let sentiment = "NEUTRAL";
   let tone = "";
   if (score >= 72) {
-    sentiment = "BULLISH / FAVORABLE";
+    sentiment = "FAVORABLE";
     tone = "pillWin";
   } else if (score <= 38) {
-    sentiment = "DEFENSIVE / CAUTION";
+    sentiment = "CAUTION";
     tone = "pillLoss";
   }
 
   const summary =
-    sentiment === "BULLISH / FAVORABLE"
+    sentiment === "FAVORABLE"
       ? "Conditions are supportive for selective setups."
-      : sentiment === "DEFENSIVE / CAUTION"
+      : sentiment === "CAUTION"
       ? "Market quality is weak. Protection matters more than aggression."
-      : "Mixed conditions. Best to stay selective and wait for clean confirmation.";
+      : "Mixed conditions. Stay selective and wait for clean confirmation.";
 
   return {
     score,
@@ -564,16 +577,16 @@ function buildAiSentimentModel({
     summary,
   };
 }
-
 function buildCommandCenter(activeTrade, liveTracker, price) {
   if (!activeTrade) {
     return {
       title: "No active trade",
       statusTone: "",
+      secured: false,
       checklist: [
-        "Wait for a clean scanner signal.",
-        "Use high-quality setups only.",
-        "Avoid forcing entries in weak conditions.",
+        "Wait for a clean ENTER_NOW signal.",
+        "Check lot size before entering manually.",
+        "Avoid forcing trades when action says WAIT or SKIP.",
       ],
       stats: [],
     };
@@ -588,93 +601,204 @@ function buildCommandCenter(activeTrade, liveTracker, price) {
   const openedAt = activeTrade.opened_at || activeTrade.openedAt || null;
   const minsOpen = openedAt ? Math.max(0, Math.round((Date.now() / 1000 - openedAt) / 60)) : null;
 
+  const tp1Hit = !!activeTrade.tp1_hit || !!liveTracker?.tp1_hit;
+  const secured = tp1Hit && entry !== null && sl !== null && Math.abs(sl - entry) < 0.00001;
+
   let riskDistance = null;
   let rewardDistance = null;
   if (entry !== null && sl !== null) riskDistance = Math.abs(entry - sl);
   if (entry !== null && tp2 !== null) rewardDistance = Math.abs(tp2 - entry);
 
   const checklist = [];
-  if (activeTrade.tp1_hit) {
-    checklist.push("TP1 already hit. Protect the position.");
-    checklist.push("This trade should already count as a secured win.");
-    checklist.push("Focus on trailing and not giving back profit.");
+
+  if (tp1Hit) {
+    checklist.push("TP1 hit ✅ — position should be protected.");
+    checklist.push(secured ? "SL appears moved to entry 🔒." : "Check if SL has moved to entry.");
+    checklist.push("Runner active: let TP2 work unless structure changes.");
   } else {
-    checklist.push("Watch whether price can first secure TP1.");
-    checklist.push("Do not overreact to small pullbacks before TP1.");
+    checklist.push("TP1 not hit yet — main focus is protecting risk.");
+    checklist.push("Do not move SL too early before TP1.");
   }
 
   if (progress >= 75) checklist.push("Trade is in strong progress territory.");
-  else if (progress >= 40) checklist.push("Trade is moving, but still needs confirmation follow-through.");
+  else if (progress >= 40) checklist.push("Trade is moving, but still needs follow-through.");
   else checklist.push("Trade is early. Stay patient and let structure develop.");
 
   if (liveTracker?.status) checklist.push(`Live status: ${liveTracker.status}.`);
 
   return {
     title: `${activeTrade.symbol} ${activeTrade.direction} Command Center`,
-    statusTone: activeTrade.tp1_hit ? "pillWin" : "",
+    statusTone: secured ? "pillWin" : tp1Hit ? "fire" : "",
+    secured,
     checklist,
     stats: [
       { label: "Progress", value: `${progress}%` },
       { label: "Minutes Open", value: minsOpen === null ? "—" : String(minsOpen) },
+      { label: "Current", value: current === null ? "—" : fmt(current) },
+      { label: "Entry", value: entry === null ? "—" : fmt(entry) },
+      { label: "SL", value: sl === null ? "—" : fmt(sl) },
+      { label: "TP1", value: tp1Hit ? "Hit ✅" : tp1 === null ? "—" : fmt(tp1) },
+      { label: "TP2", value: tp2 === null ? "—" : fmt(tp2) },
       { label: "Risk Dist.", value: riskDistance === null ? "—" : fmt(riskDistance) },
       { label: "Reward Dist.", value: rewardDistance === null ? "—" : fmt(rewardDistance) },
-      { label: "Current", value: current === null ? "—" : fmt(current) },
+      { label: "Secured", value: secured ? "YES 🔒" : "NO" },
       { label: "Quality", value: qualityText(activeTrade.quality_grade, activeTrade.quality_stars) },
       { label: "Mode", value: pickModeLabel(activeTrade) || "—" },
-      { label: "TP1", value: activeTrade.tp1_hit ? "Hit ✅" : tp1 === null ? "—" : fmt(tp1) },
     ],
   };
 }
 
-function CollapsibleCard({
-  title,
-  right = null,
-  isOpen,
-  onToggle,
-  children,
-  className = "",
+function calculateLotPlan({
+  accountSize,
+  riskPercent,
+  entry,
+  sl,
+  tp1,
+  tp2,
+  pointValue,
 }) {
-  return (
-    <div className={`card ${className}`.trim()}>
-      <button
-        type="button"
-        className="collapseToggle"
-        onClick={onToggle}
-        aria-expanded={isOpen}
-        style={{
-          width: "100%",
-          background: "transparent",
-          border: "none",
-          padding: 0,
-          color: "inherit",
-          cursor: "pointer",
-          textAlign: "left",
-        }}
-      >
-        <div className="cardHeader" style={{ marginBottom: isOpen ? 14 : 0 }}>
-          <div
-            className="collapseLeft"
-            style={{ display: "flex", alignItems: "center", gap: 10 }}
-          >
-            <span
-              className="collapseArrow"
-              style={{ fontSize: 13, opacity: 0.9, minWidth: 12 }}
-            >
-              {isOpen ? "▼" : "▶"}
-            </span>
-            <h3 className="collapseTitle" style={{ margin: 0, fontSize: "inherit" }}>
-              {title}
-            </h3>
-          </div>
-          <div className="collapseRight">{right}</div>
-        </div>
-      </button>
+  const account = safeNum(accountSize, 0);
+  const riskPct = safeNum(riskPercent, 0);
+  const riskAmount = (account * riskPct) / 100;
 
-      {isOpen ? <div className="collapseBody">{children}</div> : null}
+  const e = safeNum(entry, null);
+  const stop = safeNum(sl, null);
+  const target1 = safeNum(tp1, null);
+  const target2 = safeNum(tp2, null);
+  const pv = safeNum(pointValue, 1);
+
+  if (e === null || stop === null || pv <= 0) {
+    return {
+      valid: false,
+      riskAmount,
+      suggestedLot: null,
+      lossAtSl: null,
+      profitTp1: null,
+      profitTp2: null,
+      tp1R: null,
+      tp2R: null,
+      riskDistance: null,
+    };
+  }
+
+  const riskDistance = Math.abs(e - stop);
+  if (riskDistance <= 0) {
+    return {
+      valid: false,
+      riskAmount,
+      suggestedLot: null,
+      lossAtSl: null,
+      profitTp1: null,
+      profitTp2: null,
+      tp1R: null,
+      tp2R: null,
+      riskDistance,
+    };
+  }
+
+  const suggestedLot = riskAmount / (riskDistance * pv);
+  const lossAtSl = riskDistance * suggestedLot * pv;
+
+  let profitTp1 = null;
+  let profitTp2 = null;
+  let tp1R = null;
+  let tp2R = null;
+
+  if (target1 !== null) {
+    const reward1 = Math.abs(target1 - e);
+    profitTp1 = reward1 * suggestedLot * pv;
+    tp1R = reward1 / riskDistance;
+  }
+
+  if (target2 !== null) {
+    const reward2 = Math.abs(target2 - e);
+    profitTp2 = reward2 * suggestedLot * pv;
+    tp2R = reward2 / riskDistance;
+  }
+
+  return {
+    valid: true,
+    riskAmount,
+    suggestedLot,
+    lossAtSl,
+    profitTp1,
+    profitTp2,
+    tp1R,
+    tp2R,
+    riskDistance,
+  };
+}
+
+function buildCopySignal({
+  selectedSymbol,
+  timeframe,
+  direction,
+  tradeAction,
+  entry,
+  sl,
+  tp1,
+  tp2,
+  confidence,
+  qualityGrade,
+  actionMessage,
+  entryInstruction,
+  entryTiming,
+  lotPlan,
+}) {
+  return [
+    `DEXTRADEZBOT AI SIGNAL`,
+    `${selectedSymbol} (${timeframe})`,
+    `Direction: ${direction}`,
+    `Action: ${tradeAction}`,
+    `Confidence: ${confidence}%`,
+    `Quality: ${qualityGrade || "-"}`,
+    ``,
+    `Entry: ${entry ?? "-"}`,
+    `SL: ${sl ?? "-"}`,
+    `TP1: ${tp1 ?? "-"}`,
+    `TP2: ${tp2 ?? "-"}`,
+    ``,
+    `Suggested Lot: ${lotPlan?.suggestedLot ? lotPlan.suggestedLot.toFixed(3) : "-"}`,
+    `Risk: ${lotPlan?.lossAtSl ? money(lotPlan.lossAtSl) : "-"}`,
+    `TP1 Est: ${lotPlan?.profitTp1 ? money(lotPlan.profitTp1) : "-"}`,
+    `TP2 Est: ${lotPlan?.profitTp2 ? money(lotPlan.profitTp2) : "-"}`,
+    ``,
+    `Timing: ${entryTiming || "-"}`,
+    `Instruction: ${actionMessage || entryInstruction || "-"}`,
+  ].join("\n");
+}
+
+function StatBox({ label, value, tone = "", small = false }) {
+  return (
+    <div className="perfBox">
+      <div className="perfLabel">{label}</div>
+      <div className={`perfValue ${tone}`.trim()} style={{ fontSize: small ? 14 : undefined }}>
+        {value}
+      </div>
     </div>
   );
 }
 
+function SignalLine({ label, value, tone = "" }) {
+  return (
+    <div className="signalLine">
+      <span className="smallText">{label}</span>
+      <strong className={tone}>{value}</strong>
+    </div>
+  );
+}
+
+function SmartCard({ title, right = null, children, className = "" }) {
+  return (
+    <div className={`card ${className}`.trim()}>
+      <div className="cardHeader">
+        <h3 style={{ margin: 0 }}>{title}</h3>
+        <div>{right}</div>
+      </div>
+      {children}
+    </div>
+  );
+}
 export default function Dashboard() {
   const restored = useMemo(() => {
     try {
@@ -685,8 +809,21 @@ export default function Dashboard() {
     }
   }, []);
 
+  const restoredPointValues = useMemo(() => {
+    try {
+      const raw = localStorage.getItem(LS_KEY_POINT_VALUES);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === "object"
+        ? { ...DEFAULT_POINT_VALUES, ...parsed }
+        : DEFAULT_POINT_VALUES;
+    } catch {
+      return DEFAULT_POINT_VALUES;
+    }
+  }, []);
+
   const [selectedSymbol, setSelectedSymbol] = useState(restored?.selectedSymbol || "R_10");
   const [timeframe, setTimeframe] = useState(restored?.timeframe || "5m");
+  const [activeTab, setActiveTab] = useState(restored?.activeTab || "Overview");
 
   const [status, setStatus] = useState("IDLE");
   const [error, setError] = useState("");
@@ -704,6 +841,11 @@ export default function Dashboard() {
   const [tp2, setTp2] = useState(restored?.tp2 ?? null);
   const [reason, setReason] = useState(restored?.reason || "No signal yet.");
   const [price, setPrice] = useState(restored?.price ?? null);
+
+  const [tradeAction, setTradeAction] = useState(restored?.tradeAction || "NONE");
+  const [actionMessage, setActionMessage] = useState(restored?.actionMessage || "");
+  const [entryInstruction, setEntryInstruction] = useState(restored?.entryInstruction || "");
+  const [entryTiming, setEntryTiming] = useState(restored?.entryTiming || "");
 
   const [entryType, setEntryType] = useState(restored?.entryType || "");
   const [qualityGrade, setQualityGrade] = useState(restored?.qualityGrade || null);
@@ -734,7 +876,7 @@ export default function Dashboard() {
   const [liquidityBelow, setLiquidityBelow] = useState(restored?.liquidityBelow || "-");
   const [liquidityAbove, setLiquidityAbove] = useState(restored?.liquidityAbove || "-");
 
-  const [scanLoading, setScanLoading] = useState(restored?.scanLoading || false);
+  const [scanLoading, setScanLoading] = useState(false);
   const [ranked, setRanked] = useState(restored?.ranked || []);
   const [dailyOutlook, setDailyOutlook] = useState(restored?.dailyOutlook || null);
   const [weeklyOutlook, setWeeklyOutlook] = useState(restored?.weeklyOutlook || null);
@@ -753,7 +895,6 @@ export default function Dashboard() {
   const [activeTrade, setActiveTrade] = useState(restored?.activeTrade || null);
   const [lastActions, setLastActions] = useState(restored?.lastActions || []);
 
-  const [showHistory, setShowHistory] = useState(restored?.showHistory ?? true);
   const [history, setHistory] = useState(() => {
     try {
       const raw = localStorage.getItem(LS_KEY_HISTORY);
@@ -766,58 +907,65 @@ export default function Dashboard() {
 
   const [accountSize, setAccountSize] = useState(restored?.accountSize ?? 100);
   const [riskPercent, setRiskPercent] = useState(restored?.riskPercent ?? 2);
+  const [pointValues, setPointValues] = useState(restoredPointValues);
 
-  const [openSections, setOpenSections] = useState(
-    restored?.openSections || {
-      dailyOutlook: true,
-      weeklyStats: true,
-      aiSentiment: true,
-      openTrades: true,
-      commandCenter: true,
-      topPick: false,
-      chart: false,
-      marketBriefing: true,
-      riskCalculator: false,
-      scanner: true,
-      history: false,
-    }
-  );
-
-  const toggleSection = useCallback((key) => {
-    setOpenSections((prev) => ({
-      ...prev,
-      [key]: !prev[key],
-    }));
-  }, []);
-
-  const performance = useMemo(() => calcPerformance(history), [history]);
+  const analyzeBusyRef = useRef(false);
+  const scanBusyRef = useRef(false);
+  const wsRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  const lastOkAtRef = useRef(restored?.lastOkAt || 0);
+  const lastLiveAtRef = useRef(restored?.lastLiveAt || 0);
+  const openTradeRef = useRef(null);
+  const analyzeRequestRef = useRef(0);
    const symbolsList = useMemo(
-    () => VOLATILITY_OPTIONS.filter((v) => v.symbol !== "ALL").map((v) => v.symbol),
+    () => VOLATILITY_OPTIONS.map((v) => v.symbol),
     []
   );
 
   const selectedName =
     VOLATILITY_OPTIONS.find((v) => v.symbol === selectedSymbol)?.name || selectedSymbol;
 
-  const openMarkets = useMemo(() => {
-    const rows = ranked.filter((r) => r.active_trade);
-    if (activeTrade && !rows.some((r) => r.symbol === activeTrade.symbol)) {
-      return [
-        {
-          symbol: activeTrade.symbol,
-          direction: activeTrade.direction,
-          confidence: activeTrade.confidence,
-          active_trade: true,
-          market_state: marketState,
-          preferred_setup: preferredSetup,
-          quality_grade: activeTrade.quality_grade || qualityGrade,
-          quality_stars: activeTrade.quality_stars || qualityStars,
-        },
-        ...rows,
-      ];
-    }
-    return rows;
-  }, [ranked, activeTrade, marketState, preferredSetup, qualityGrade, qualityStars]);
+  const selectedPointValue = safeNum(pointValues?.[selectedSymbol], 1);
+
+  const dailyStats = useMemo(() => calcStats(history, "today"), [history]);
+  const weeklyStats = useMemo(() => calcStats(history, "week"), [history]);
+  const allStats = useMemo(() => calcStats(history, "all"), [history]);
+
+  const personalBestSetup = useMemo(() => getBestFromHistory(history, "entryType"), [history]);
+  const personalBestMarket = useMemo(() => getBestFromHistory(history, "symbol"), [history]);
+
+  const currentAlignmentChip =
+    alignmentScore !== null
+      ? `${alignmentLabel ? `${alignmentLabel} ` : ""}${Math.round(alignmentScore)}%`
+      : null;
+
+  const marketStateTone =
+    marketState === "TRENDING CLEAN"
+      ? "pillWin"
+      : marketState === "REVERSAL RISK" || marketState === "CHOPPY / NO-TRADE"
+      ? "pillLoss"
+      : "";
+
+  const reversalTone =
+    reversalRisk === "LOW"
+      ? "pillWin"
+      : reversalRisk === "HIGH"
+      ? "pillLoss"
+      : "";
+
+  const lotPlan = useMemo(
+    () =>
+      calculateLotPlan({
+        accountSize,
+        riskPercent,
+        entry,
+        sl,
+        tp1,
+        tp2,
+        pointValue: selectedPointValue,
+      }),
+    [accountSize, riskPercent, entry, sl, tp1, tp2, selectedPointValue]
+  );
 
   const aiExplanation = useMemo(
     () =>
@@ -845,47 +993,6 @@ export default function Dashboard() {
     ]
   );
 
-  const riskAmount = useMemo(() => {
-    const size = safeNum(accountSize, 0);
-    const pct = safeNum(riskPercent, 0);
-    return (size * pct) / 100;
-  }, [accountSize, riskPercent]);
-
-  const rrMultiple = useMemo(() => {
-    if (entry == null || sl == null || tp2 == null) return null;
-    const risk = Math.abs(Number(entry) - Number(sl));
-    const reward = Math.abs(Number(tp2) - Number(entry));
-    if (!Number.isFinite(risk) || risk <= 0) return null;
-    return reward / risk;
-  }, [entry, sl, tp2]);
-
-  const tp1Multiple = useMemo(() => {
-    if (entry == null || sl == null || tp1 == null) return null;
-    const risk = Math.abs(Number(entry) - Number(sl));
-    const reward = Math.abs(Number(tp1) - Number(entry));
-    if (!Number.isFinite(risk) || risk <= 0) return null;
-    return reward / risk;
-  }, [entry, sl, tp1]);
-
-  const estimatedTp1Profit = useMemo(() => {
-    if (!riskAmount || entry == null || sl == null || tp1 == null) return null;
-    const risk = Math.abs(Number(entry) - Number(sl));
-    const reward = Math.abs(Number(tp1) - Number(entry));
-    if (!Number.isFinite(risk) || risk <= 0) return null;
-    return (reward / risk) * riskAmount;
-  }, [riskAmount, entry, sl, tp1]);
-
-  const estimatedTp2Profit = useMemo(() => {
-    if (!riskAmount || entry == null || sl == null || tp2 == null) return null;
-    const risk = Math.abs(Number(entry) - Number(sl));
-    const reward = Math.abs(Number(tp2) - Number(entry));
-    if (!Number.isFinite(risk) || risk <= 0) return null;
-    return (reward / risk) * riskAmount;
-  }, [riskAmount, entry, sl, tp2]);
-
-  const personalBestSetup = useMemo(() => getBestSetupFromHistory(history), [history]);
-  const personalBestMarket = useMemo(() => getBestMarketFromHistory(history), [history]);
-
   const aiSentiment = useMemo(
     () =>
       buildAiSentimentModel({
@@ -906,14 +1013,100 @@ export default function Dashboard() {
     [activeTrade, liveTracker, price]
   );
 
-  const analyzeBusyRef = useRef(false);
-  const scanBusyRef = useRef(false);
-  const wsRef = useRef(null);
-  const reconnectTimerRef = useRef(null);
-  const lastOkAtRef = useRef(restored?.lastOkAt || 0);
-  const lastLiveAtRef = useRef(restored?.lastLiveAt || 0);
-  const openTradeRef = useRef(null);
-  const analyzeRequestRef = useRef(0);
+  const openMarkets = useMemo(() => {
+    const rows = ranked.filter((r) => r.active_trade);
+
+    if (activeTrade && !rows.some((r) => r.symbol === activeTrade.symbol)) {
+      return [
+        {
+          symbol: activeTrade.symbol,
+          direction: activeTrade.direction,
+          confidence: activeTrade.confidence,
+          active_trade: true,
+          market_state: marketState,
+          preferred_setup: preferredSetup,
+          quality_grade: activeTrade.quality_grade || qualityGrade,
+          quality_stars: activeTrade.quality_stars || qualityStars,
+          trade_action: activeTrade.trade_action || tradeAction,
+        },
+        ...rows,
+      ];
+    }
+
+    return rows;
+  }, [ranked, activeTrade, marketState, preferredSetup, qualityGrade, qualityStars, tradeAction]);
+
+  const topPick = useMemo(() => {
+    if (!ranked?.length) return null;
+
+    const candidates = ranked
+      .filter(
+        (r) =>
+          (r.direction === "BUY" || r.direction === "SELL") &&
+          safeNum(r.confidence, 0) > 0
+      )
+      .sort((a, b) => {
+        const aEnter = a.trade_action === "ENTER_NOW" ? 1 : 0;
+        const bEnter = b.trade_action === "ENTER_NOW" ? 1 : 0;
+        if (bEnter !== aEnter) return bEnter - aEnter;
+
+        const ac = safeNum(a.confidence, 0);
+        const bc = safeNum(b.confidence, 0);
+        if (bc !== ac) return bc - ac;
+
+        return (b.market_state === "TRENDING CLEAN") - (a.market_state === "TRENDING CLEAN");
+      });
+
+    return candidates[0] || null;
+  }, [ranked]);
+
+  const backendUrl = useMemo(() => getBackendUrl(), []);
+
+  const copyText = useCallback(async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus("COPIED");
+      setTimeout(() => setStatus("LIVE"), 1200);
+    } catch {
+      setError("Copy failed. Your browser may block clipboard access.");
+    }
+  }, []);
+
+  const copySignalText = useMemo(
+    () =>
+      buildCopySignal({
+        selectedSymbol,
+        timeframe,
+        direction,
+        tradeAction,
+        entry,
+        sl,
+        tp1,
+        tp2,
+        confidence,
+        qualityGrade,
+        actionMessage,
+        entryInstruction,
+        entryTiming,
+        lotPlan,
+      }),
+    [
+      selectedSymbol,
+      timeframe,
+      direction,
+      tradeAction,
+      entry,
+      sl,
+      tp1,
+      tp2,
+      confidence,
+      qualityGrade,
+      actionMessage,
+      entryInstruction,
+      entryTiming,
+      lotPlan,
+    ]
+  );
 
   useEffect(() => {
     try {
@@ -922,6 +1115,7 @@ export default function Dashboard() {
         JSON.stringify({
           selectedSymbol,
           timeframe,
+          activeTab,
           candles,
           supports,
           resistances,
@@ -934,6 +1128,10 @@ export default function Dashboard() {
           tp2,
           reason,
           price,
+          tradeAction,
+          actionMessage,
+          entryInstruction,
+          entryTiming,
           entryType,
           qualityGrade,
           qualityStars,
@@ -972,12 +1170,10 @@ export default function Dashboard() {
           autoScanEverySec,
           autoAnalyzeOn,
           autoAnalyzeEverySec,
-          showHistory,
           activeTrade,
           lastActions,
           accountSize,
           riskPercent,
-          openSections,
           lastOkAt: lastOkAtRef.current,
           lastLiveAt: lastLiveAtRef.current,
         })
@@ -986,6 +1182,7 @@ export default function Dashboard() {
   }, [
     selectedSymbol,
     timeframe,
+    activeTab,
     candles,
     supports,
     resistances,
@@ -998,6 +1195,10 @@ export default function Dashboard() {
     tp2,
     reason,
     price,
+    tradeAction,
+    actionMessage,
+    entryInstruction,
+    entryTiming,
     entryType,
     qualityGrade,
     qualityStars,
@@ -1036,12 +1237,10 @@ export default function Dashboard() {
     autoScanEverySec,
     autoAnalyzeOn,
     autoAnalyzeEverySec,
-    showHistory,
     activeTrade,
     lastActions,
     accountSize,
     riskPercent,
-    openSections,
   ]);
 
   useEffect(() => {
@@ -1050,6 +1249,11 @@ export default function Dashboard() {
     } catch {}
   }, [history]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_KEY_POINT_VALUES, JSON.stringify(pointValues));
+    } catch {}
+  }, [pointValues]); 
   useEffect(() => {
     const id = setInterval(() => {
       if (analyzeBusyRef.current || scanBusyRef.current) return;
@@ -1078,6 +1282,10 @@ export default function Dashboard() {
     setTp1(null);
     setTp2(null);
     setReason("Loading new market...");
+    setTradeAction("NONE");
+    setActionMessage("");
+    setEntryInstruction("");
+    setEntryTiming("");
     setEntryType("");
     setQualityGrade(null);
     setQualityStars("");
@@ -1110,49 +1318,129 @@ export default function Dashboard() {
     setError("");
   }, [selectedSymbol, timeframe]);
 
-  const topPick = useMemo(() => {
-    if (!ranked?.length) return null;
-    const candidates = ranked
-      .filter((r) => (r.direction === "BUY" || r.direction === "SELL") && safeNum(r.confidence, 0) > 0)
-      .sort((a, b) => {
-        const ac = safeNum(a.confidence, 0);
-        const bc = safeNum(b.confidence, 0);
-        if (bc !== ac) return bc - ac;
-        return (b.market_state === "TRENDING CLEAN") - (a.market_state === "TRENDING CLEAN");
-      });
+  const updateFromAnalyze = useCallback(
+    (norm, symbol, tf) => {
+      setCandles(norm.candles);
+      setSupports(norm.supports);
+      setResistances(norm.resistances);
 
-    return candidates[0] || null;
-  }, [ranked]);
+      setDirection(norm.direction || "HOLD");
+      setConfidence(safeNum(norm.confidence, 0));
+      setEntry(norm.entry ?? null);
+      setSl(norm.sl ?? null);
+      setTp(norm.tp ?? null);
+      setTp1(norm.tp1 ?? null);
+      setTp2(norm.tp2 ?? null);
+      setReason(norm.reason || "—");
 
-  const currentAlignmentChip =
-    alignmentScore !== null
-      ? `${alignmentLabel ? `${alignmentLabel} ` : ""}${Math.round(alignmentScore)}%`
-      : null;
+      setTradeAction(norm.tradeAction || "NONE");
+      setActionMessage(norm.actionMessage || "");
+      setEntryInstruction(norm.entryInstruction || "");
+      setEntryTiming(norm.entryTiming || "");
 
-  const marketStateTone =
-    marketState === "TRENDING CLEAN"
-      ? "pillWin"
-      : marketState === "REVERSAL RISK" || marketState === "CHOPPY / NO-TRADE"
-      ? "pillLoss"
-      : "";
+      setQualityGrade(norm.qualityGrade ?? null);
+      setQualityStars(norm.qualityStars ?? "");
+      setQualityScore(norm.qualityScore ?? null);
 
-  const reversalTone =
-    reversalRisk === "LOW"
-      ? "pillWin"
-      : reversalRisk === "HIGH"
-      ? "pillLoss"
-      : "";
+      if (norm.price !== null && norm.price !== undefined) setPrice(norm.price);
 
-  const weeklyWinTone =
-    safeNum(weeklyOutlook?.winRate, 0) >= 60
-      ? "pillWin"
-      : safeNum(weeklyOutlook?.winRate, 0) <= 40 && safeNum(weeklyOutlook?.totalClosed, 0) > 0
-      ? "pillLoss"
-      : "";
+      setEntryType(norm.entryType || "");
+      setAlignmentScore(norm.alignment?.score ?? null);
+      setAlignmentLabel(norm.alignment?.label ?? null);
+      setAlignmentDetails(Array.isArray(norm.alignment?.details) ? norm.alignment.details : []);
+
+      setBias(norm.briefing.bias);
+      setMonthlyBias(norm.briefing.monthlyBias);
+      setWeeklyBias(norm.briefing.weeklyBias);
+      setDailyBias(norm.briefing.dailyBias);
+      setStructure(norm.briefing.structure);
+      setPreviousTrend(norm.briefing.previousTrend);
+      setTrendStrength(norm.briefing.trendStrength);
+      setMarketState(norm.briefing.marketState);
+      setReversalRisk(norm.briefing.reversalRisk);
+      setBuyerZone(norm.briefing.buyerZone);
+      setSellerZone(norm.briefing.sellerZone);
+      setAreaOfInterest(norm.briefing.areaOfInterest);
+      setConfirmationNeeded(norm.briefing.confirmationNeeded);
+      setPreferredSetup(norm.briefing.preferredSetup);
+      setInvalidation(norm.briefing.invalidation);
+      setBriefSupport(norm.briefing.support);
+      setBriefResistance(norm.briefing.resistance);
+      setLiquidityBelow(norm.briefing.liquidityBelow);
+      setLiquidityAbove(norm.briefing.liquidityAbove);
+
+      setMaxActiveTotal(safeNum(norm.maxActive ?? maxActiveTotal, maxActiveTotal));
+      setDailyR(safeNum(norm.raw?.daily_R ?? dailyR, dailyR));
+      setActiveTotal(safeNum(norm.raw?.active_total ?? activeTotal, activeTotal));
+      setLastActions(norm.actions || []);
+      setLiveTracker(norm.liveTracker || null);
+
+      if (norm.dailyOutlook) setDailyOutlook(norm.dailyOutlook);
+      if (norm.weeklyOutlook) setWeeklyOutlook(norm.weeklyOutlook);
+
+      if (norm.active && norm.raw?.signal) {
+        setActiveTrade({
+          symbol,
+          timeframe: tf,
+          ...norm.raw.signal,
+          actions: norm.actions || [],
+          price: norm.price ?? null,
+          alignment: norm.alignment || null,
+        });
+      } else if (!norm.active) {
+        setActiveTrade((prev) => {
+          if (prev?.symbol === symbol && prev?.timeframe === tf) return null;
+          return prev;
+        });
+      }
+
+      if (norm.closedTrade?.outcome) {
+        const outcome = norm.closedTrade.outcome;
+        const closedAt = norm.closedTrade.closed_at ?? Math.floor(Date.now() / 1000);
+
+        setHistory((prev) => {
+          const next = [...prev];
+
+          for (let i = next.length - 1; i >= 0; i--) {
+            const t = next[i];
+
+            if (t.symbol === symbol && t.timeframe === tf && t.outcome === "OPEN") {
+              next[i] = {
+                ...t,
+                outcome,
+                closedAt,
+                closePrice: norm.price ?? t.closePrice,
+                tp1Hit: !!norm.closedTrade?.tp1_hit,
+                rMult: safeNum(norm.closedTrade?.r_multiple, t.rMult),
+                tp1RMult: safeNum(norm.closedTrade?.tp1_r_multiple, t.tp1RMult),
+              };
+              return next.slice(-500);
+            }
+          }
+
+          return next.slice(-500);
+        });
+
+        if (
+          openTradeRef.current &&
+          openTradeRef.current.symbol === symbol &&
+          openTradeRef.current.timeframe === tf
+        ) {
+          openTradeRef.current = null;
+        }
+
+        setActiveTrade(null);
+        setLiveTracker(null);
+      }
+
+      lastOkAtRef.current = Date.now();
+      setStatus("LIVE");
+    },
+    [activeTotal, dailyR, maxActiveTotal]
+  );
 
   const runAnalyze = useCallback(
     async (symbol, tf) => {
-      if (symbol === "ALL") return null;
       if (analyzeBusyRef.current) return null;
 
       const requestId = ++analyzeRequestRef.current;
@@ -1165,168 +1453,8 @@ export default function Dashboard() {
         if (requestId !== analyzeRequestRef.current) return null;
 
         const norm = normalizeAnalyzeResponse(data);
+        updateFromAnalyze(norm, symbol, tf);
 
-        setCandles(norm.candles);
-        setSupports(norm.supports);
-        setResistances(norm.resistances);
-
-        setDirection(norm.direction || "HOLD");
-        setConfidence(safeNum(norm.confidence, 0));
-        setEntry(norm.entry ?? null);
-        setSl(norm.sl ?? null);
-        setTp(norm.tp ?? null);
-        setTp1(norm.tp1 ?? null);
-        setTp2(norm.tp2 ?? null);
-        setReason(norm.reason || "—");
-        setQualityGrade(norm.qualityGrade ?? null);
-        setQualityStars(norm.qualityStars ?? "");
-        setQualityScore(norm.qualityScore ?? null);
-
-        if (norm.price !== null && norm.price !== undefined) setPrice(norm.price);
-
-        setEntryType(norm.entryType || "");
-        setAlignmentScore(norm.alignment?.score ?? null);
-        setAlignmentLabel(norm.alignment?.label ?? null);
-        setAlignmentDetails(Array.isArray(norm.alignment?.details) ? norm.alignment.details : []);
-
-        setBias(norm.briefing.bias);
-        setMonthlyBias(norm.briefing.monthlyBias);
-        setWeeklyBias(norm.briefing.weeklyBias);
-        setDailyBias(norm.briefing.dailyBias);
-        setStructure(norm.briefing.structure);
-        setPreviousTrend(norm.briefing.previousTrend);
-        setTrendStrength(norm.briefing.trendStrength);
-        setMarketState(norm.briefing.marketState);
-        setReversalRisk(norm.briefing.reversalRisk);
-        setBuyerZone(norm.briefing.buyerZone);
-        setSellerZone(norm.briefing.sellerZone);
-        setAreaOfInterest(norm.briefing.areaOfInterest);
-        setConfirmationNeeded(norm.briefing.confirmationNeeded);
-        setPreferredSetup(norm.briefing.preferredSetup);
-        setInvalidation(norm.briefing.invalidation);
-        setBriefSupport(norm.briefing.support);
-        setBriefResistance(norm.briefing.resistance);
-        setLiquidityBelow(norm.briefing.liquidityBelow);
-        setLiquidityAbove(norm.briefing.liquidityAbove);
-
-        setMaxActiveTotal(safeNum(norm.maxActive ?? maxActiveTotal, maxActiveTotal));
-        setDailyR(safeNum(norm.raw?.daily_R ?? dailyR, dailyR));
-        setActiveTotal(safeNum(norm.raw?.active_total ?? activeTotal, activeTotal));
-        setLastActions(norm.actions || []);
-        setLiveTracker(norm.liveTracker || null);
-        if (norm.dailyOutlook) setDailyOutlook(norm.dailyOutlook);
-        if (norm.weeklyOutlook) setWeeklyOutlook(norm.weeklyOutlook);
-
-        if (norm.active && norm.raw?.signal) {
-          setActiveTrade({
-            symbol,
-            timeframe: tf,
-            ...norm.raw.signal,
-            actions: norm.actions || [],
-            price: norm.price ?? null,
-            alignment: norm.alignment || null,
-          });
-        } else if (!norm.active) {
-          setActiveTrade((prev) => {
-            if (prev?.symbol === symbol && prev?.timeframe === tf) return null;
-            return prev;
-          });
-        }
-
-        if (norm.active && norm.raw?.signal?.opened_at) {
-          const openedAt = norm.raw.signal.opened_at;
-
-          const alreadyOpen =
-            openTradeRef.current &&
-            openTradeRef.current.symbol === symbol &&
-            openTradeRef.current.timeframe === tf &&
-            openTradeRef.current.openedAt === openedAt;
-
-          if (!alreadyOpen) {
-            openTradeRef.current = { symbol, timeframe: tf, openedAt };
-
-            setHistory((prev) => {
-              const exists = prev.some(
-                (t) =>
-                  t.symbol === symbol &&
-                  t.timeframe === tf &&
-                  t.outcome === "OPEN" &&
-                  t.openedAt === openedAt
-              );
-              if (exists) return prev;
-
-              const item = makeHistoryItem({
-                symbol,
-                timeframe: tf,
-                signal: norm.raw.signal,
-                openedAt,
-                outcome: "OPEN",
-                weekKey: norm.raw?.signal?.week_key ?? null,
-                dayKey: norm.raw?.signal?.day_key ?? null,
-              });
-              return [...prev, item].slice(-500);
-            });
-          }
-        }
-
-        if (
-          norm.closedTrade?.outcome &&
-          (
-            norm.closedTrade.outcome === "TP2" ||
-            norm.closedTrade.outcome === "TP1_ONLY" ||
-            norm.closedTrade.outcome === "BE" ||
-            norm.closedTrade.outcome === "SL"
-          )
-        ) {
-          const outcome = norm.closedTrade.outcome;
-          const closedAt = norm.closedTrade.closed_at ?? Math.floor(Date.now() / 1000);
-
-          setHistory((prev) => {
-            const next = [...prev];
-            for (let i = next.length - 1; i >= 0; i--) {
-              const t = next[i];
-              if (t.symbol === symbol && t.timeframe === tf && t.outcome === "OPEN") {
-                next[i] = {
-                  ...t,
-                  outcome,
-                  closedAt,
-                  closePrice: norm.price ?? t.closePrice,
-                  tp1Hit: !!norm.closedTrade?.tp1_hit,
-                  rMult: safeNum(norm.closedTrade?.r_multiple, t.rMult),
-                  tp1RMult: safeNum(norm.closedTrade?.tp1_r_multiple, t.tp1RMult),
-                };
-                return next.slice(-500);
-              }
-            }
-
-            const item = makeHistoryItem({
-              symbol,
-              timeframe: tf,
-              signal: norm.closedTrade,
-              openedAt: norm.closedTrade.opened_at ?? null,
-              closedAt,
-              outcome,
-              closePrice: norm.price ?? null,
-              weekKey: norm.closedTrade?.week_key ?? null,
-              dayKey: norm.closedTrade?.day_key ?? null,
-            });
-            return [...next, item].slice(-500);
-          });
-
-          if (
-            openTradeRef.current &&
-            openTradeRef.current.symbol === symbol &&
-            openTradeRef.current.timeframe === tf
-          ) {
-            openTradeRef.current = null;
-          }
-
-          setActiveTrade(null);
-          setLiveTracker(null);
-        }
-
-        lastOkAtRef.current = Date.now();
-        setStatus("LIVE");
         return norm;
       } catch (e) {
         if (requestId === analyzeRequestRef.current) {
@@ -1339,15 +1467,15 @@ export default function Dashboard() {
         }
       }
     },
-    [dailyR, activeTotal, maxActiveTotal]
-  ); 
+    [updateFromAnalyze]
+  );
+
   const syncGlobalState = useCallback(async () => {
     try {
-      const data = await withTimeout(fetchGlobalState(150), 12000, "Global state");
+      const data = await withTimeout(fetchGlobalState(200), 12000, "Global state");
 
       const activeTrades = Array.isArray(data?.active_trades) ? data.active_trades : [];
       const backendHistory = Array.isArray(data?.history) ? data.history : [];
-      const perf = data?.performance || null;
       const weekly = data?.weekly || data?.weekly_outlook || null;
 
       setDailyR(safeNum(data?.daily_R ?? 0, 0));
@@ -1374,20 +1502,14 @@ export default function Dashboard() {
           tp1: t.tp1 ?? null,
           tp2: t.tp2 ?? t.tp ?? null,
           entry_type: pickModeLabel(t),
+          trade_action: t.trade_action ?? "NONE",
+          action_message: t.action_message ?? "",
           reversal_risk: t?.meta?.reversal_risk || null,
         }));
 
         setRanked((prev) => {
           const nonActive = Array.isArray(prev) ? prev.filter((r) => !r.active_trade) : [];
-          const merged = [...activeRows, ...nonActive];
-
-          const seen = new Set();
-          return merged.filter((r) => {
-            const key = `${r.symbol}-${r.entry_type || ""}-${r.active_trade ? "A" : "N"}`;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-          });
+          return [...activeRows, ...nonActive];
         });
 
         const selectedActive = activeTrades.find(
@@ -1419,14 +1541,11 @@ export default function Dashboard() {
         setLiveTracker(null);
       }
 
-      if (perf) {
-        lastOkAtRef.current = Date.now();
-      }
+      lastOkAtRef.current = Date.now();
     } catch (e) {
       console.error("Global state sync failed:", e);
     }
-  }, [selectedSymbol, timeframe, price]);
-
+  }, [selectedSymbol, timeframe, price]);  
   useEffect(() => {
     syncGlobalState();
 
@@ -1441,6 +1560,7 @@ export default function Dashboard() {
 
   const onScan = useCallback(async () => {
     if (scanBusyRef.current) return null;
+
     scanBusyRef.current = true;
     setError("");
     setScanLoading(true);
@@ -1451,9 +1571,14 @@ export default function Dashboard() {
       const newRanked = Array.isArray(data?.ranked) ? data.ranked : Array.isArray(data) ? data : [];
 
       newRanked.sort((a, b) => {
+        const aEnter = a.trade_action === "ENTER_NOW" ? 1 : 0;
+        const bEnter = b.trade_action === "ENTER_NOW" ? 1 : 0;
+        if (bEnter !== aEnter) return bEnter - aEnter;
+
         const ac = safeNum(a.confidence, 0);
         const bc = safeNum(b.confidence, 0);
         if (bc !== ac) return bc - ac;
+
         return (b.market_state === "TRENDING CLEAN") - (a.market_state === "TRENDING CLEAN");
       });
 
@@ -1477,7 +1602,12 @@ export default function Dashboard() {
       if (autoPickOn) {
         const best = newRanked
           .filter((r) => (r.direction === "BUY" || r.direction === "SELL") && safeNum(r.confidence, 0) > 0)
-          .sort((a, b) => safeNum(b.confidence, 0) - safeNum(a.confidence, 0))[0];
+          .sort((a, b) => {
+            const aEnter = a.trade_action === "ENTER_NOW" ? 1 : 0;
+            const bEnter = b.trade_action === "ENTER_NOW" ? 1 : 0;
+            if (bEnter !== aEnter) return bEnter - aEnter;
+            return safeNum(b.confidence, 0) - safeNum(a.confidence, 0);
+          })[0];
 
         if (best?.symbol) {
           if (best.symbol !== selectedSymbol) setSelectedSymbol(best.symbol);
@@ -1499,16 +1629,10 @@ export default function Dashboard() {
   }, [symbolsList, timeframe, autoPickOn, selectedSymbol, runAnalyze, maxActiveTotal]);
 
   const onAnalyze = useCallback(async () => {
-    if (selectedSymbol === "ALL") {
-      await onScan();
-      return;
-    }
     await runAnalyze(selectedSymbol, timeframe);
-  }, [runAnalyze, onScan, selectedSymbol, timeframe]);
+  }, [runAnalyze, selectedSymbol, timeframe]);
 
   useEffect(() => {
-    if (selectedSymbol === "ALL") return;
-
     let closedByUser = false;
 
     function connect() {
@@ -1607,7 +1731,6 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!autoAnalyzeOn) return;
-    if (selectedSymbol === "ALL") return;
 
     const everyMs = clamp(safeNum(autoAnalyzeEverySec, 15), 5, 120) * 1000;
 
@@ -1625,7 +1748,7 @@ export default function Dashboard() {
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === "visible") {
-        if (autoAnalyzeOn && selectedSymbol !== "ALL" && !analyzeBusyRef.current) {
+        if (autoAnalyzeOn && !analyzeBusyRef.current) {
           runAnalyze(selectedSymbol, timeframe);
         }
         if (autoScanOn && !scanBusyRef.current) {
@@ -1633,6 +1756,7 @@ export default function Dashboard() {
         }
       }
     };
+
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [autoAnalyzeOn, autoScanOn, runAnalyze, onScan, selectedSymbol, timeframe]);
@@ -1645,12 +1769,454 @@ export default function Dashboard() {
     } catch {}
   }, []);
 
-  const activeBanner = activeTrade && (activeTrade.direction === "BUY" || activeTrade.direction === "SELL");
+  const setMarketAndAnalyze = useCallback(
+    async (symbol) => {
+      setSelectedSymbol(symbol);
+      setActiveTab("Signal");
+      await runAnalyze(symbol, timeframe);
+    },
+    [runAnalyze, timeframe]
+  );
+
+  const updatePointValue = useCallback((symbol, value) => {
+    setPointValues((prev) => ({
+      ...prev,
+      [symbol]: value,
+    }));
+  }, []);
+
+  const resetPointValues = useCallback(() => {
+    setPointValues(DEFAULT_POINT_VALUES);
+  }, []);
+
+  const activeBanner =
+    activeTrade && (activeTrade.direction === "BUY" || activeTrade.direction === "SELL");
 
   const activeAlignmentChip =
     activeTrade?.alignment?.score !== undefined && activeTrade?.alignment?.score !== null
       ? `${activeTrade?.alignment?.label ? `${activeTrade.alignment.label} ` : ""}${Math.round(activeTrade.alignment.score)}%`
       : null;
+
+  const tradeChecklist = [
+    tradeAction === "ENTER_NOW" ? "Action is ENTER_NOW ✅" : `Action is ${tradeAction || "NONE"} — be careful`,
+    direction === "BUY" || direction === "SELL" ? `Direction is ${direction} ✅` : "No BUY/SELL direction yet",
+    entry !== null && sl !== null ? "Entry and SL are available ✅" : "Entry/SL missing",
+    tp1 !== null && tp2 !== null ? "TP1 and TP2 are available ✅" : "Targets missing",
+    lotPlan.valid ? `Suggested lot calculated: ${lotPlan.suggestedLot.toFixed(3)}` : "Lot calculation not ready",
+    safeNum(riskPercent, 0) <= 3 ? "Risk percent is controlled ✅" : "Risk percent is high",
+  ];
+  const renderOverview = () => (
+    <>
+      <div className="perfGrid">
+        <StatBox label="Decision" value={tradeActionLabel(tradeAction)} tone={tradeActionTone(tradeAction)} />
+        <StatBox label="Direction" value={direction} tone={directionTone(direction)} />
+        <StatBox label="Confidence" value={`${confidence}%`} />
+        <StatBox label="Quality" value={qualityText(qualityGrade, qualityStars)} small />
+        <StatBox label="Daily Win %" value={percent(dailyStats.winRate)} />
+        <StatBox label="Weekly Win %" value={percent(weeklyStats.winRate)} />
+        <StatBox label="Daily R" value={dailyR} />
+        <StatBox label="Active" value={`${activeTotal}/${maxActiveTotal}`} />
+      </div>
+
+      {topPick ? (
+        <SmartCard
+          title="Top Market Right Now"
+          className="topPickCard"
+          right={<span className={`pill ${tradeActionTone(topPick.trade_action)}`}>{tradeActionLabel(topPick.trade_action)}</span>}
+        >
+          <div className="topPick">
+            <div className="topPickLeft">
+              <span className="pill fire">🔥 TOP</span>
+              <span className="mono">{topPick.symbol}</span>
+              <span className={`pill ${directionTone(topPick.direction)}`}>{topPick.direction}</span>
+              <span className="pill">Conf {safeNum(topPick.confidence, 0)}%</span>
+              <span className="pill">Quality {qualityText(topPick.quality_grade, topPick.quality_stars)}</span>
+              {topPick.market_state ? <span className="pill">{topPick.market_state}</span> : null}
+              <span className="pill">
+                Strength {renderStrengthBar(computeStrength(topPick))} {computeStrength(topPick).toFixed(1)} / 10
+              </span>
+            </div>
+            <div className="topPickRight">
+              <button className="btn small" onClick={() => setMarketAndAnalyze(topPick.symbol)}>Open Signal</button>
+            </div>
+          </div>
+        </SmartCard>
+      ) : null}
+
+      <SmartCard
+        title="AI Sentiment"
+        className="sentimentCard"
+        right={<span className={`pill ${aiSentiment.tone}`}>{aiSentiment.sentiment}</span>}
+      >
+        <SignalLine label="Sentiment Score" value={`${aiSentiment.score}/100`} />
+        <SignalLine label="Tradable Markets" value={aiSentiment.tradableCount} />
+        <SignalLine label="Current Bias" value={bias} />
+        <SignalLine label="Current State" value={marketState} tone={marketStateTone} />
+        <div className="reason"><span className="smallText"><b>Summary:</b> {aiSentiment.summary}</span></div>
+      </SmartCard>
+    </>
+  );
+
+  const renderSignal = () => (
+    <SmartCard
+      title="Smart Signal Command Center"
+      className="commandCenterCard"
+      right={<span className={`pill ${tradeActionTone(tradeAction)}`}>{tradeActionLabel(tradeAction)}</span>}
+    >
+      <div className="perfGrid">
+        <StatBox label="Market" value={selectedSymbol} />
+        <StatBox label="Timeframe" value={timeframe} />
+        <StatBox label="Direction" value={direction} tone={directionTone(direction)} />
+        <StatBox label="Confidence" value={`${confidence}%`} />
+        <StatBox label="Quality" value={qualityText(qualityGrade, qualityStars)} small />
+        <StatBox label="Mode" value={entryType || "—"} small />
+      </div>
+
+      <div className="perfGrid" style={{ marginTop: 14 }}>
+        <StatBox label="Entry" value={entry ?? "—"} />
+        <StatBox label="SL" value={sl ?? "—"} />
+        <StatBox label="TP1" value={tp1 ?? "—"} />
+        <StatBox label="TP2" value={tp2 ?? "—"} />
+      </div>
+
+      <div className="actionsBox" style={{ marginTop: 14 }}>
+        <div className="tiny"><b>What to do:</b></div>
+        <div className="reason">
+          <span className="smallText">
+            {actionMessage || entryInstruction || reason || "No instruction yet."}
+          </span>
+        </div>
+
+        <div className="reason" style={{ marginTop: 8 }}>
+          <span className="smallText"><b>Timing:</b> {entryTiming || "—"}</span>
+        </div>
+      </div>
+
+      <div className="actionsBox">
+        <div className="tiny"><b>Manual Trade Checklist:</b></div>
+        <div className="actionsList">
+          {tradeChecklist.map((item, idx) => (
+            <div key={idx} className="actionChip">
+              <span>{item}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="controls" style={{ marginTop: 14 }}>
+        <button className="btn primary" onClick={() => copyText(copySignalText)}>
+          Copy Signal
+        </button>
+        <button className="btn" onClick={onAnalyze}>
+          Refresh Signal
+        </button>
+      </div>
+    </SmartCard>
+  );
+
+  const renderLotCalculator = () => (
+    <SmartCard
+      title="Signal Lot Calculator"
+      className="riskCard"
+      right={<span className="pill">{selectedSymbol}</span>}
+    >
+      <div className="reason">
+        <span className="smallText">
+          This calculator auto-fills from the current signal. Adjust point value once you confirm how your Deriv lot size behaves for each market.
+        </span>
+      </div>
+
+      <div className="togglesRow" style={{ alignItems: "flex-end", marginTop: 12 }}>
+        <div className="miniField">
+          <span className="miniLabel">Account</span>
+          <input className="miniInput" value={accountSize} onChange={(e) => setAccountSize(e.target.value)} inputMode="decimal" />
+        </div>
+
+        <div className="miniField">
+          <span className="miniLabel">Risk %</span>
+          <input className="miniInput" value={riskPercent} onChange={(e) => setRiskPercent(e.target.value)} inputMode="decimal" />
+        </div>
+
+        <div className="miniField">
+          <span className="miniLabel">Point Value / 1 lot</span>
+          <input
+            className="miniInput"
+            value={pointValues[selectedSymbol] ?? 1}
+            onChange={(e) => updatePointValue(selectedSymbol, e.target.value)}
+            inputMode="decimal"
+          />
+        </div>
+
+        <button className="btn small" onClick={resetPointValues}>Reset values</button>
+      </div>
+
+      <div className="perfGrid" style={{ marginTop: 14 }}>
+        <StatBox label="Risk Amount" value={money(lotPlan.riskAmount)} />
+        <StatBox label="Suggested Lot" value={lotPlan.suggestedLot === null ? "—" : lotPlan.suggestedLot.toFixed(3)} />
+        <StatBox label="Loss at SL" value={lotPlan.lossAtSl === null ? "—" : money(lotPlan.lossAtSl)} tone="pillLoss" />
+        <StatBox label="Profit at TP1" value={lotPlan.profitTp1 === null ? "—" : money(lotPlan.profitTp1)} tone="pillWin" />
+        <StatBox label="Profit at TP2" value={lotPlan.profitTp2 === null ? "—" : money(lotPlan.profitTp2)} tone="pillWin" />
+        <StatBox label="Risk Distance" value={lotPlan.riskDistance === null ? "—" : fmt(lotPlan.riskDistance)} />
+        <StatBox label="TP1 R:R" value={lotPlan.tp1R === null ? "—" : lotPlan.tp1R.toFixed(2)} />
+        <StatBox label="TP2 R:R" value={lotPlan.tp2R === null ? "—" : lotPlan.tp2R.toFixed(2)} />
+      </div>
+
+      <div className="controls" style={{ marginTop: 14 }}>
+        <button className="btn primary" onClick={() => copyText(copySignalText)}>
+          Copy Lot Plan
+        </button>
+      </div>
+    </SmartCard>
+  );
+
+  const renderActiveTrade = () => (
+    <SmartCard
+      title="Active Trade Protection"
+      className="openTradesCard"
+      right={<span className={`pill ${commandCenter.statusTone}`}>{commandCenter.secured ? "SECURED 🔒" : "MONITOR"}</span>}
+    >
+      {activeTrade ? (
+        <>
+          <div className="perfGrid">
+            {commandCenter.stats.map((s, idx) => (
+              <StatBox key={idx} label={s.label} value={s.value} small />
+            ))}
+          </div>
+
+          <div className="actionsBox">
+            <div className="tiny"><b>Trade Management:</b></div>
+            <div className="actionsList">
+              {commandCenter.checklist.map((item, idx) => (
+                <div key={idx} className="actionChip">
+                  <span>{item}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="emptyRow">No active trade right now.</div>
+      )}
+    </SmartCard>
+  );
+
+  const renderStats = (stats, title) => (
+    <SmartCard
+      title={title}
+      className="weeklyStatsCard"
+      right={<span className={`pill ${stats.winRate >= 60 ? "pillWin" : stats.lossRate >= 50 && stats.totalClosed > 0 ? "pillLoss" : ""}`}>{percent(stats.winRate)}</span>}
+    >
+      <div className="perfGrid">
+        <StatBox label="Trades" value={stats.trades} />
+        <StatBox label="Closed" value={stats.totalClosed} />
+        <StatBox label="Open" value={stats.open} />
+        <StatBox label="Wins" value={stats.wins} tone="pillWin" />
+        <StatBox label="Losses" value={stats.losses} tone="pillLoss" />
+        <StatBox label="Breakevens" value={stats.breakevens} />
+        <StatBox label="TP1 Wins" value={stats.tp1Wins} />
+        <StatBox label="TP2 Wins" value={stats.tp2Wins} />
+        <StatBox label="Win Rate" value={percent(stats.winRate)} />
+        <StatBox label="Loss Rate" value={percent(stats.lossRate)} />
+        <StatBox label="Sum R" value={stats.sumR} />
+        <StatBox label="Avg R" value={stats.avgR} />
+      </div>
+    </SmartCard>
+  );
+   const renderScanner = () => (
+    <SmartCard title="Market Scanner" className="scannerCard" right={<span className="tiny">{ranked?.length || 0} markets</span>}>
+      <div className="tableWrap">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Market</th>
+              <th>Decision</th>
+              <th>Direction</th>
+              <th>Conf</th>
+              <th>Quality</th>
+              <th>State</th>
+              <th>Risk</th>
+              <th>Strength</th>
+              <th>Entry</th>
+              <th>SL</th>
+              <th>TP1</th>
+              <th>TP2</th>
+              <th>Open</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ranked?.length ? ranked.map((r, idx) => {
+              const strength = computeStrength(r);
+              return (
+                <tr key={`${r.symbol || idx}-${idx}`}>
+                  <td className="mono">{r.symbol || "—"}</td>
+                  <td><span className={`pill ${tradeActionTone(r.trade_action)}`}>{tradeActionLabel(r.trade_action)}</span></td>
+                  <td><span className={`pill ${directionTone(r.direction)}`}>{r.direction || "—"}</span></td>
+                  <td>{safeNum(r.confidence, 0)}%</td>
+                  <td>{qualityText(r.quality_grade, r.quality_stars)}</td>
+                  <td className="notes">{r.market_state || "—"}</td>
+                  <td>{r.reversal_risk || "—"}</td>
+                  <td className="mono">{renderStrengthBar(strength)} {strength.toFixed(1)}</td>
+                  <td>{r.entry ?? "—"}</td>
+                  <td>{r.sl ?? "—"}</td>
+                  <td>{r.tp1 ?? "—"}</td>
+                  <td>{r.tp2 ?? r.tp ?? "—"}</td>
+                  <td><button className="btn small" onClick={() => setMarketAndAnalyze(r.symbol)}>Open</button></td>
+                </tr>
+              );
+            }) : (
+              <tr><td colSpan="13" className="emptyRow">No scanner data yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </SmartCard>
+  );
+
+  const renderChart = () => (
+    <SmartCard title="Live Chart" className="chartCard" right={<span className="tiny">Candles: {candles?.length || 0}</span>}>
+      <div className="chartWrap">
+        <Chart
+          key={`${selectedSymbol}-${timeframe}`}
+          candles={candles}
+          supports={supports}
+          resistances={resistances}
+          symbol={selectedSymbol}
+          timeframe={timeframe}
+          entry={entry}
+          sl={sl}
+          tp={tp}
+          tp1={tp1}
+          tp2={tp2}
+        />
+      </div>
+    </SmartCard>
+  );
+
+  const renderHistory = () => (
+    <SmartCard title="History & Performance" className="historyCard" right={<span className="tiny">Trades logged: {history.length}</span>}>
+      <div className="perfGrid">
+        <StatBox label="All Win %" value={percent(allStats.winRate)} />
+        <StatBox label="All Closed" value={allStats.totalClosed} />
+        <StatBox label="All Wins" value={allStats.wins} />
+        <StatBox label="All Losses" value={allStats.losses} />
+        <StatBox label="All B/E" value={allStats.breakevens} />
+        <StatBox label="All Sum R" value={allStats.sumR} />
+        <StatBox label="Best Market" value={personalBestMarket} small />
+        <StatBox label="Best Setup" value={personalBestSetup} small />
+      </div>
+
+      <div className="controls" style={{ marginTop: 14 }}>
+        <button className="btn small" onClick={clearHistory}>Clear local history</button>
+      </div>
+
+      <div className="tableWrap" style={{ marginTop: 14 }}>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Market</th>
+              <th>TF</th>
+              <th>Dir</th>
+              <th>Action</th>
+              <th>Quality</th>
+              <th>Conf</th>
+              <th>Entry</th>
+              <th>SL</th>
+              <th>TP1</th>
+              <th>TP2</th>
+              <th>Outcome</th>
+              <th>R</th>
+            </tr>
+          </thead>
+          <tbody>
+            {history?.length ? [...history].slice(-60).reverse().map((t) => (
+              <tr key={t.id}>
+                <td className="tiny">{t.closedAt ? toIso(t.closedAt) : toIso(t.openedAt)}</td>
+                <td className="mono">{t.symbol}</td>
+                <td>{t.timeframe}</td>
+                <td>{t.direction}</td>
+                <td>{tradeActionLabel(t.tradeAction)}</td>
+                <td>{qualityText(t.qualityGrade, t.qualityStars)}</td>
+                <td>{safeNum(t.confidence, 0)}%</td>
+                <td>{fmt(t.entry)}</td>
+                <td>{fmt(t.sl)}</td>
+                <td>{fmt(t.tp1)}</td>
+                <td>{fmt(t.tp2 ?? t.tp)}</td>
+                <td><span className={`pill ${outcomeTone(t.outcome)}`}>{formatOutcomeLabel(t.outcome)}</span></td>
+                <td>
+                  {t.outcome === "TP2"
+                    ? `+${t.rMult ?? "?"}`
+                    : t.outcome === "TP1_ONLY"
+                    ? `+${t.tp1RMult ?? "?"}`
+                    : t.outcome === "SL"
+                    ? "-1"
+                    : t.outcome === "BE"
+                    ? "0"
+                    : "—"}
+                </td>
+              </tr>
+            )) : (
+              <tr><td colSpan="13" className="emptyRow">No history yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </SmartCard>
+  );
+
+  const renderHealth = () => (
+    <SmartCard title="System Health" className="sentimentCard" right={<span className={`badge ${status === "LIVE" ? "live" : ""}`}>{status}</span>}>
+      <SignalLine label="Backend URL" value={backendUrl} />
+      <SignalLine label="Selected Market" value={selectedSymbol} />
+      <SignalLine label="Timeframe" value={timeframe} />
+      <SignalLine label="Last API OK" value={lastOkAtRef.current ? new Date(lastOkAtRef.current).toLocaleTimeString() : "—"} />
+      <SignalLine label="Last Live Tick" value={lastLiveAtRef.current ? new Date(lastLiveAtRef.current).toLocaleTimeString() : "—"} />
+      <SignalLine label="Auto Scan" value={autoScanOn ? `ON every ${autoScanEverySec}s` : "OFF"} />
+      <SignalLine label="Auto Analyze" value={autoAnalyzeOn ? `ON every ${autoAnalyzeEverySec}s` : "OFF"} />
+      <SignalLine label="Active Trades" value={`${activeTotal}/${maxActiveTotal}`} />
+      {error ? <div className="errorBox">Error: {error}</div> : null}
+    </SmartCard>
+  );
+
+  const renderMarketBriefing = () => (
+    <SmartCard title="Market Briefing" className="marketBriefingCard" right={<span className={`pill ${marketStateTone}`}>{marketState}</span>}>
+      <SignalLine label="Market" value={`${selectedSymbol} — ${selectedName}`} />
+      <SignalLine label="Bias" value={bias} />
+      <SignalLine label="Monthly Bias" value={monthlyBias} />
+      <SignalLine label="Weekly Bias" value={weeklyBias} />
+      <SignalLine label="Daily Bias" value={dailyBias} />
+      <SignalLine label="Structure" value={structure} />
+      <SignalLine label="Previous Trend" value={previousTrend} />
+      <SignalLine label="Trend Strength" value={trendStrength === null ? "—" : trendStrength} />
+      <SignalLine label="Reversal Risk" value={reversalRisk} tone={reversalTone} />
+      <SignalLine label="Buyer Zone" value={buyerZone} />
+      <SignalLine label="Seller Zone" value={sellerZone} />
+      <SignalLine label="AOI" value={areaOfInterest} />
+      <SignalLine label="Support" value={briefSupport} />
+      <SignalLine label="Resistance" value={briefResistance} />
+      <SignalLine label="Liquidity Below" value={liquidityBelow} />
+      <SignalLine label="Liquidity Above" value={liquidityAbove} />
+      <SignalLine label="Weighted Alignment" value={currentAlignmentChip || "—"} />
+      <div className="reason"><span className="smallText"><b>Preferred Setup:</b> {preferredSetup}</span></div>
+      <div className="reason"><span className="smallText"><b>Confirmation Needed:</b> {confirmationNeeded}</span></div>
+      <div className="reason"><span className="smallText"><b>Invalidation:</b> {invalidation}</span></div>
+      <div className="reason" style={{ marginTop: 10 }}><span className="smallText"><b>AI Explanation:</b> {aiExplanation}</span></div>
+    </SmartCard>
+  );
+
+  const renderTab = () => {
+    if (activeTab === "Overview") return renderOverview();
+    if (activeTab === "Signal") return renderSignal();
+    if (activeTab === "Lot Calculator") return renderLotCalculator();
+    if (activeTab === "Active Trade") return renderActiveTrade();
+    if (activeTab === "Daily Stats") return renderStats(dailyStats, "Daily Performance");
+    if (activeTab === "Weekly Stats") return renderStats(weeklyStats, "Weekly Performance");
+    if (activeTab === "Scanner") return renderScanner();
+    if (activeTab === "Chart") return renderChart();
+    if (activeTab === "History") return renderHistory();
+    if (activeTab === "Health") return renderHealth();
+    return renderOverview();
+  };
 
   return (
     <div className="layout">
@@ -1658,16 +2224,16 @@ export default function Dashboard() {
         <div className="topRow">
           <div>
             <div className="title">DEXTRADEZBOT AI</div>
-            <div className="subtitle">Market Intelligence • Liquidity Mapping • Selective Trade Ideas</div>
+            <div className="subtitle">Smart Manual Trading Dashboard • Signals • Lot Calculator • Performance</div>
           </div>
 
           <div className="badges">
-            <span className={`badge ${status === "LIVE" ? "live" : ""}`}>
-              {status === "SCANNING" ? <span className="scanning">SCANNING</span> : status}
-            </span>
-            <span className="badge">Daily R: {dailyR}</span>
+            <span className={`badge ${status === "LIVE" ? "live" : ""}`}>{status}</span>
+            <span className={`badge ${tradeActionTone(tradeAction)}`}>{tradeActionLabel(tradeAction)}</span>
+            <span className="badge">Daily: {percent(dailyStats.winRate)}</span>
+            <span className="badge">Weekly: {percent(weeklyStats.winRate)}</span>
             <span className="badge">Active: {activeTotal}/{maxActiveTotal}</span>
-            <span className="badge">Price: {price === null || price === undefined ? "—" : String(price)}</span>
+            <span className="badge">Price: {price ?? "—"}</span>
           </div>
         </div>
 
@@ -1676,79 +2242,35 @@ export default function Dashboard() {
             <div className="activeLeft">
               <span className="pill fire">🟢 ACTIVE</span>
               <span className="mono">{activeTrade.symbol} • {activeTrade.timeframe}</span>
-              <span className="pill">{activeTrade.direction}</span>
+              <span className={`pill ${directionTone(activeTrade.direction)}`}>{activeTrade.direction}</span>
               <span className="pill">Conf {safeNum(activeTrade.confidence, 0)}%</span>
-              <span className="pill">
-                Quality {qualityText(activeTrade.quality_grade || qualityGrade, activeTrade.quality_stars || qualityStars)}
-              </span>
-              {pickModeLabel(activeTrade) ? <span className="pill">Mode {pickModeLabel(activeTrade)}</span> : null}
-              {activeAlignmentChip ? <span className="pill">Align {activeAlignmentChip}</span> : null}
+              <span className="pill">Quality {qualityText(activeTrade.quality_grade || qualityGrade, activeTrade.quality_stars || qualityStars)}</span>
               {activeTrade.tp1_hit ? <span className="pill pillWin">TP1 hit ✅</span> : <span className="pill">TP1 pending</span>}
+              {commandCenter.secured ? <span className="pill pillWin">Secured 🔒</span> : null}
+              {activeAlignmentChip ? <span className="pill">Align {activeAlignmentChip}</span> : null}
             </div>
-
-            <div className="activeRight">
-              <div className="activeNums">
-                <div><div className="miniLabel">Entry</div><div className="mono">{fmt(activeTrade.entry)}</div></div>
-                <div><div className="miniLabel">SL</div><div className="mono">{fmt(activeTrade.sl)}</div></div>
-                <div><div className="miniLabel">TP1</div><div className="mono">{fmt(activeTrade.tp1)}</div></div>
-                <div><div className="miniLabel">TP2</div><div className="mono">{fmt(activeTrade.tp2 ?? activeTrade.tp)}</div></div>
-              </div>
-
-              <button className="btn small" onClick={() => setSelectedSymbol(activeTrade.symbol)}>Select</button>
-            </div>
-
-            {liveTracker ? (
-              <div className="activeActions" style={{ marginTop: 10 }}>
-                <div className="miniLabel">Live Trade Tracker</div>
-                <div className="actionsList">
-                  <div className="actionChip"><span className="mono">Status: {liveTracker.status || "-"}</span></div>
-                  <div className="actionChip"><span className="mono">Progress: {safeNum(liveTracker.progress_pct, 0)}%</span></div>
-                  <div className="actionChip"><span className="mono">Price: {liveTracker.current_price ?? "-"}</span></div>
-                  <div className="actionChip"><span className="mono">Quality: {qualityText(liveTracker.quality_grade, liveTracker.quality_stars)}</span></div>
-                </div>
-              </div>
-            ) : null}
-
-            {Array.isArray(activeTrade.actions) && activeTrade.actions.length ? (
-              <div className="activeActions">
-                <div className="miniLabel">Actions</div>
-                <div className="actionsList">
-                  {activeTrade.actions.slice(0, 4).map((a, idx) => (
-                    <div key={idx} className="actionChip">
-                      <span className="mono">{a.type}</span>
-                      {a.to !== undefined ? <span className="mono">→ {a.to}</span> : null}
-                      {a.percent !== undefined ? <span className="mono">({Math.round(a.percent * 100)}%)</span> : null}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
           </div>
         ) : null}
 
         <div className="controls">
-          <select value={selectedSymbol} onChange={(e) => setSelectedSymbol(e.target.value)} className="select">
-            {VOLATILITY_OPTIONS.map((v) => (
-              <option key={v.symbol} value={v.symbol}>
-                {v.symbol} — {v.name}
-              </option>
-            ))}
-          </select>
+          {VOLATILITY_OPTIONS.map((v) => (
+            <button
+              key={v.symbol}
+              className={`btn small ${selectedSymbol === v.symbol ? "primary" : ""}`}
+              onClick={() => setMarketAndAnalyze(v.symbol)}
+            >
+              {v.symbol}
+            </button>
+          ))}
 
           <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)} className="select">
             {TIMEFRAMES.map((t) => (
-              <option key={t.value} value={t.value}>
-                {t.label}
-              </option>
+              <option key={t.value} value={t.value}>{t.label}</option>
             ))}
           </select>
 
-          <button className="btn primary" onClick={onAnalyze}>
-            {selectedSymbol === "ALL" ? "Scan All Markets" : "Analyze (Manual)"}
-          </button>
-          <button className="btn" onClick={onScan} disabled={scanLoading}>
-            {scanLoading ? "Scanning..." : "Scan Markets (Manual)"}
-          </button>
+          <button className="btn primary" onClick={onAnalyze}>Analyze</button>
+          <button className="btn" onClick={onScan} disabled={scanLoading}>{scanLoading ? "Scanning..." : "Scan"}</button>
         </div>
 
         <div className="togglesRow">
@@ -1765,7 +2287,7 @@ export default function Dashboard() {
 
           <label className="toggle">
             <input type="checkbox" checked={autoPickOn} onChange={(e) => setAutoPickOn(e.target.checked)} />
-            <span>Auto-pick strongest</span>
+            <span>Auto-pick</span>
           </label>
 
           <label className="toggle">
@@ -1778,537 +2300,28 @@ export default function Dashboard() {
             <input className="miniInput" value={autoAnalyzeEverySec} onChange={(e) => setAutoAnalyzeEverySec(e.target.value)} inputMode="numeric" />
             <span className="miniLabel">s</span>
           </div>
-
-          <label className="toggle">
-            <input type="checkbox" checked={showHistory} onChange={(e) => setShowHistory(e.target.checked)} />
-            <span>Show history</span>
-          </label>
         </div>
 
         {error ? <div className="errorBox">Error: {error}</div> : null}
+      </div>
 
-        <div className="perfGrid" style={{ marginTop: 14 }}>
-          <div className="perfBox"><div className="perfLabel">Today Win %</div><div className="perfValue">{performance.winRate}%</div></div>
-          <div className="perfBox"><div className="perfLabel">Closed Trades</div><div className="perfValue">{performance.closedCount}</div></div>
-          <div className="perfBox"><div className="perfLabel">Wins</div><div className="perfValue">{performance.wins}</div></div>
-          <div className="perfBox"><div className="perfLabel">Losses</div><div className="perfValue">{performance.losses}</div></div>
-          <div className="perfBox"><div className="perfLabel">B/E</div><div className="perfValue">{performance.breakevens}</div></div>
-          <div className="perfBox"><div className="perfLabel">Sum R</div><div className="perfValue">{performance.sumR}</div></div>
-          <div className="perfBox"><div className="perfLabel">Best Setup</div><div className="perfValue" style={{ fontSize: 14 }}>{personalBestSetup}</div></div>
-          <div className="perfBox"><div className="perfLabel">Best Market</div><div className="perfValue" style={{ fontSize: 14 }}>{personalBestMarket}</div></div>
+      <div className="card">
+        <div className="controls" style={{ flexWrap: "wrap" }}>
+          {TABS.map((tab) => (
+            <button
+              key={tab}
+              className={`btn small ${activeTab === tab ? "primary" : ""}`}
+              onClick={() => setActiveTab(tab)}
+            >
+              {tab}
+            </button>
+          ))}
         </div>
       </div>
 
-      {dailyOutlook ? (
-        <CollapsibleCard
-          title="Daily Market Outlook"
-          className="dailyOutlookCard"
-          isOpen={openSections.dailyOutlook}
-          onToggle={() => toggleSection("dailyOutlook")}
-          right={<div className="tiny">Scanner overview</div>}
-        >
-          <div className="signalLine"><span className="smallText">Headline</span><strong>{dailyOutlook.headline || "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">Best Market</span><strong>{dailyOutlook.best_symbol || "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">Direction</span><strong>{dailyOutlook.best_direction || "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">Confidence</span><strong>{safeNum(dailyOutlook.best_confidence, 0)}%</strong></div>
-          <div className="signalLine"><span className="smallText">Market State</span><strong>{dailyOutlook.market_state || "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">AOI</span><strong>{dailyOutlook.area_of_interest || "-"}</strong></div>
-          <div className="reason"><span className="smallText"><b>Preferred Setup:</b> {dailyOutlook.preferred_setup || "-"}</span></div>
-          <div className="reason"><span className="smallText"><b>Note:</b> {dailyOutlook.note || "-"}</span></div>
-        </CollapsibleCard>
-      ) : null}
+      {renderTab()}
 
-      <CollapsibleCard
-        title="Weekly Stats"
-        className="weeklyStatsCard"
-        isOpen={openSections.weeklyStats}
-        onToggle={() => toggleSection("weeklyStats")}
-        right={
-          <span className={`pill ${weeklyWinTone}`}>
-            {weeklyOutlook?.weekKey || "Current Week"}
-          </span>
-        }
-      >
-        <div className="perfGrid">
-          <div className="perfBox">
-            <div className="perfLabel">Week</div>
-            <div className="perfValue" style={{ fontSize: 15 }}>
-              {weeklyOutlook?.weekKey || "-"}
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Weekly Win %</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.winRate, 0)}%
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Weekly Loss %</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.lossRate, 0)}%
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Closed</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.totalClosed, 0)}
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Wins</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.wins, 0)}
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">Losses</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.losses, 0)}
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">TP1 Wins</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.partials, 0)}
-            </div>
-          </div>
-          <div className="perfBox">
-            <div className="perfLabel">TP2 Wins</div>
-            <div className="perfValue">
-              {safeNum(weeklyOutlook?.fullWins, 0)}
-            </div>
-          </div>
-        </div>
-      </CollapsibleCard>
-
-      <CollapsibleCard
-        title="AI Sentiment"
-        className="sentimentCard"
-        isOpen={openSections.aiSentiment}
-        onToggle={() => toggleSection("aiSentiment")}
-        right={<span className={`pill ${aiSentiment.tone}`}>{aiSentiment.sentiment}</span>}
-      >
-        <div className="signalLine"><span className="smallText">AI Sentiment</span><strong>{aiSentiment.sentiment}</strong></div>
-        <div className="signalLine"><span className="smallText">Sentiment Score</span><strong>{aiSentiment.score}/100</strong></div>
-        <div className="signalLine"><span className="smallText">Tradable Markets</span><strong>{aiSentiment.tradableCount}</strong></div>
-        <div className="signalLine"><span className="smallText">Current Bias</span><strong>{bias}</strong></div>
-        <div className="signalLine"><span className="smallText">Current State</span><strong>{marketState}</strong></div>
-        <div className="reason"><span className="smallText"><b>AI Summary:</b> {aiSentiment.summary}</span></div>
-      </CollapsibleCard>
-
-      <CollapsibleCard
-        title="Open Trades"
-        className="openTradesCard"
-        isOpen={openSections.openTrades}
-        onToggle={() => toggleSection("openTrades")}
-        right={<div className="tiny">{openMarkets.length} open</div>}
-      >
-        {openMarkets.length ? (
-          <div className="actionsList">
-            {openMarkets.map((m, idx) => (
-              <div key={`${m.symbol}-${idx}`} className="actionChip" style={{ padding: 10 }}>
-                <span className="mono">{m.symbol}</span>
-                <span className="mono">{m.direction || "-"}</span>
-                <span className="mono">Conf {safeNum(m.confidence, 0)}%</span>
-                <span className="mono">{qualityText(m.quality_grade, m.quality_stars)}</span>
-                {m.market_state ? <span className="mono">{m.market_state}</span> : null}
-                <button className="btn small" onClick={() => setSelectedSymbol(m.symbol)}>Select</button>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="emptyRow">No open trades right now.</div>
-        )}
-      </CollapsibleCard>
-
-      <CollapsibleCard
-        title="Active Trade Command Center"
-        className="commandCenterCard"
-        isOpen={openSections.commandCenter}
-        onToggle={() => toggleSection("commandCenter")}
-        right={<span className={`pill ${commandCenter.statusTone}`}>{commandCenter.title}</span>}
-      >
-        {commandCenter.stats?.length ? (
-          <div className="perfGrid">
-            {commandCenter.stats.map((s, idx) => (
-              <div key={idx} className="perfBox">
-                <div className="perfLabel">{s.label}</div>
-                <div className="perfValue" style={{ fontSize: 16 }}>{s.value}</div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        <div className="actionsBox">
-          <div className="tiny"><b>AI Command Checklist:</b></div>
-          <div className="actionsList">
-            {commandCenter.checklist.map((item, idx) => (
-              <div key={idx} className="actionChip">
-                <span>{item}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </CollapsibleCard>
-      {topPick ? (
-        <CollapsibleCard
-          title="Top Pick"
-          className="topPickCard"
-          isOpen={openSections.topPick}
-          onToggle={() => toggleSection("topPick")}
-          right={<div className="tiny">Best live setup</div>}
-        >
-          <div className="topPick">
-            <div className="topPickLeft">
-              <span className="pill fire">🔥 TOP</span>
-              <span className="mono">{topPick.symbol}</span>
-              <span className="pill">{topPick.direction}</span>
-              <span className="pill">Conf {safeNum(topPick.confidence, 0)}%</span>
-              <span className="pill">Quality {qualityText(topPick.quality_grade, topPick.quality_stars)}</span>
-              {topPick.market_state ? <span className="pill">{topPick.market_state}</span> : null}
-              {topPick.preferred_setup ? <span className="pill">{topPick.preferred_setup}</span> : null}
-              <span className="pill">
-                Strength {renderStrengthBar(computeStrength(topPick))} {computeStrength(topPick).toFixed(1)} / 10
-              </span>
-            </div>
-            <div className="topPickRight">
-              <button className="btn small" onClick={() => setSelectedSymbol(topPick.symbol)}>Select</button>
-            </div>
-          </div>
-        </CollapsibleCard>
-      ) : null}
-
-      <div className="mainGrid">
-        <CollapsibleCard
-          title="Chart"
-          className="chartCard"
-          isOpen={openSections.chart}
-          onToggle={() => toggleSection("chart")}
-          right={<div className="tiny">Candles: {candles?.length || 0} • S: {supports?.length || 0} • R: {resistances?.length || 0}</div>}
-        >
-          <div className="chartWrap">
-            {selectedSymbol === "ALL" ? (
-              <div
-                style={{
-                  minHeight: 460,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  opacity: 0.75,
-                  padding: 20,
-                  textAlign: "center",
-                }}
-              >
-                Scanner mode selected. Pick one market to view the live chart.
-              </div>
-            ) : (
-              <Chart
-                key={`${selectedSymbol}-${timeframe}`}
-                candles={candles}
-                supports={supports}
-                resistances={resistances}
-                symbol={selectedSymbol}
-                timeframe={timeframe}
-                entry={entry}
-                sl={sl}
-                tp={tp}
-                tp1={tp1}
-                tp2={tp2}
-              />
-            )}
-          </div>
-        </CollapsibleCard>
-
-        <CollapsibleCard
-          title="Market Briefing"
-          className="marketBriefingCard"
-          isOpen={openSections.marketBriefing}
-          onToggle={() => toggleSection("marketBriefing")}
-          right={<span className={`badge ${status === "LIVE" ? "live" : ""}`}>{status}</span>}
-        >
-          <div className="signalLine"><span className="smallText">Market</span><strong>{selectedSymbol} — {selectedName}</strong></div>
-          <div className="signalLine"><span className="smallText">Timeframe</span><strong>{timeframe}</strong></div>
-          <div className="signalLine"><span className="smallText">Bias</span><strong>{bias}</strong></div>
-          <div className="signalLine"><span className="smallText">Monthly Bias</span><strong>{monthlyBias}</strong></div>
-          <div className="signalLine"><span className="smallText">Weekly Bias</span><strong>{weeklyBias}</strong></div>
-          <div className="signalLine"><span className="smallText">Daily Bias</span><strong>{dailyBias}</strong></div>
-          <div className="signalLine"><span className="smallText">Structure</span><strong>{structure}</strong></div>
-          <div className="signalLine"><span className="smallText">Previous Trend</span><strong>{previousTrend}</strong></div>
-          <div className="signalLine"><span className="smallText">Trend Strength</span><strong>{trendStrength === null ? "-" : trendStrength}</strong></div>
-          <div className="signalLine"><span className="smallText">Market State</span><strong><span className={`pill ${marketStateTone}`}>{marketState}</span></strong></div>
-          <div className="signalLine"><span className="smallText">Reversal Risk</span><strong><span className={`pill ${reversalTone}`}>{reversalRisk}</span></strong></div>
-          <div className="signalLine"><span className="smallText">Buyer Zone</span><strong>{buyerZone}</strong></div>
-          <div className="signalLine"><span className="smallText">Seller Zone</span><strong>{sellerZone}</strong></div>
-          <div className="signalLine"><span className="smallText">AOI</span><strong>{areaOfInterest}</strong></div>
-          <div className="signalLine"><span className="smallText">Support</span><strong>{briefSupport}</strong></div>
-          <div className="signalLine"><span className="smallText">Resistance</span><strong>{briefResistance}</strong></div>
-          <div className="signalLine"><span className="smallText">Liquidity Below</span><strong>{liquidityBelow}</strong></div>
-          <div className="signalLine"><span className="smallText">Liquidity Above</span><strong>{liquidityAbove}</strong></div>
-          <div className="reason"><span className="smallText"><b>Preferred Setup:</b> {preferredSetup}</span></div>
-          <div className="reason"><span className="smallText"><b>Confirmation Needed:</b> {confirmationNeeded}</span></div>
-          <div className="reason"><span className="smallText"><b>Invalidation:</b> {invalidation}</span></div>
-
-          <hr style={{ opacity: 0.15, margin: "14px 0" }} />
-
-          <div className="signalLine"><span className="smallText">Signal Direction</span><strong>{direction}</strong></div>
-          <div className="signalLine"><span className="smallText">Confidence</span><strong>{confidence}%</strong></div>
-          <div className="signalLine"><span className="smallText">Signal Quality</span><strong>{qualityText(qualityGrade, qualityStars)}</strong></div>
-          <div className="signalLine"><span className="smallText">Entry Type</span><strong>{entryType || "—"}</strong></div>
-          <div className="signalLine"><span className="smallText">Weighted Alignment</span><strong>{currentAlignmentChip || "—"}</strong></div>
-
-          {alignmentDetails?.length ? (
-            <div className="alignBox">
-              <div className="tiny"><b>Alignment details:</b></div>
-              <div className="alignList">
-                {alignmentDetails.slice(0, 6).map((d, idx) => {
-                  const tf = d.tf || d.timeframe || d.t || "?";
-                  const dir = d.dir || d.direction || "-";
-                  const w = d.weight !== undefined ? d.weight : d.w;
-                  const ok = d.ok ?? d.match ?? d.aligned;
-                  return (
-                    <span key={idx} className={`pill ${ok === false ? "pillLoss" : ok === true ? "pillWin" : ""}`}>
-                      {tf}:{dir}{w !== undefined ? ` (w ${w})` : ""}
-                    </span>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
-
-          <div className="signalLine"><span className="smallText">Entry</span><strong>{entry ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">SL</span><strong>{sl ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">TP1</span><strong>{tp1 ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">TP2</span><strong>{tp2 ?? "-"}</strong></div>
-          <div className="signalLine"><span className="smallText">TP1 R:R</span><strong>{tp1Multiple === null ? "—" : tp1Multiple.toFixed(2)}</strong></div>
-          <div className="signalLine"><span className="smallText">TP2 R:R</span><strong>{rrMultiple === null ? "—" : rrMultiple.toFixed(2)}</strong></div>
-
-          <div className="reason"><span className="smallText"><b>Reason:</b> {reason}</span></div>
-
-          <div className="reason" style={{ marginTop: 12 }}>
-            <span className="smallText"><b>AI Trade Explanation:</b></span>
-            <div className="tiny note" style={{ marginTop: 6 }}>{aiExplanation}</div>
-          </div>
-
-          {lastActions?.length ? (
-            <div className="actionsBox">
-              <div className="tiny"><b>Backend actions:</b></div>
-              <div className="actionsList">
-                {lastActions.slice(0, 4).map((a, idx) => (
-                  <div key={idx} className="actionChip">
-                    <span className="mono">{a.type}</span>
-                    {a.to !== undefined ? <span className="mono">→ {a.to}</span> : null}
-                    {a.percent !== undefined ? <span className="mono">({Math.round(a.percent * 100)}%)</span> : null}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </CollapsibleCard>
-      </div>
-
-      <CollapsibleCard
-        title="Risk Calculator"
-        className="riskCard"
-        isOpen={openSections.riskCalculator}
-        onToggle={() => toggleSection("riskCalculator")}
-        right={<div className="tiny">Premium Tool</div>}
-      >
-        <div className="togglesRow" style={{ alignItems: "flex-end" }}>
-          <div className="miniField">
-            <span className="miniLabel">Account</span>
-            <input className="miniInput" value={accountSize} onChange={(e) => setAccountSize(e.target.value)} inputMode="decimal" />
-          </div>
-
-          <div className="miniField">
-            <span className="miniLabel">Risk %</span>
-            <input className="miniInput" value={riskPercent} onChange={(e) => setRiskPercent(e.target.value)} inputMode="decimal" />
-          </div>
-        </div>
-
-        <div className="perfGrid" style={{ marginTop: 14 }}>
-          <div className="perfBox"><div className="perfLabel">Risk Amount</div><div className="perfValue">${safeNum(riskAmount, 0).toFixed(2)}</div></div>
-          <div className="perfBox"><div className="perfLabel">TP1 R:R</div><div className="perfValue">{tp1Multiple === null ? "—" : tp1Multiple.toFixed(2)}</div></div>
-          <div className="perfBox"><div className="perfLabel">TP2 R:R</div><div className="perfValue">{rrMultiple === null ? "—" : rrMultiple.toFixed(2)}</div></div>
-          <div className="perfBox"><div className="perfLabel">Est. TP1</div><div className="perfValue">{estimatedTp1Profit === null ? "—" : `$${estimatedTp1Profit.toFixed(2)}`}</div></div>
-          <div className="perfBox"><div className="perfLabel">Est. TP2</div><div className="perfValue">{estimatedTp2Profit === null ? "—" : `$${estimatedTp2Profit.toFixed(2)}`}</div></div>
-        </div>
-      </CollapsibleCard>
-
-      <CollapsibleCard
-        title="Scanner"
-        className="scannerCard"
-        isOpen={openSections.scanner}
-        onToggle={() => toggleSection("scanner")}
-        right={<div className="tiny">Markets: {ranked?.length || 0}</div>}
-      >
-        <div className="tableWrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Market</th>
-                <th>Smart Label</th>
-                <th>Bias</th>
-                <th>State</th>
-                <th>Risk</th>
-                <th>Action</th>
-                <th>Conf</th>
-                <th>Quality</th>
-                <th>Strength</th>
-                <th>AOI</th>
-                <th>Setup</th>
-                <th>Entry</th>
-                <th>SL</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ranked?.length ? (
-                ranked.map((r, idx) => {
-                  const isHot =
-                    idx === 0 &&
-                    (r.direction === "BUY" || r.direction === "SELL") &&
-                    safeNum(r.confidence, 0) > 0;
-
-                  const smartLabel = getScannerSmartLabel(r, idx);
-
-                  return (
-                    <tr key={`${r.symbol || idx}-${idx}`} className={isHot ? "hotRow" : ""}>
-                      <td className="mono">
-                        {r.symbol ?? "-"} {isHot ? <span className="pill fireTiny">🔥</span> : null}
-                        {r.active_trade ? <span className="pill pillWin" style={{ marginLeft: 6 }}>ACTIVE</span> : null}
-                      </td>
-                      <td><span className={`pill ${smartLabel.tone}`}>{smartLabel.text}</span></td>
-                      <td>{r.bias ?? "—"}</td>
-                      <td className="notes">{r.market_state ?? "—"}</td>
-                      <td>{r.reversal_risk ?? "—"}</td>
-                      <td>{r.direction ?? "—"}</td>
-                      <td>{safeNum(r.confidence, 0)}%</td>
-                      <td>{qualityText(r.quality_grade, r.quality_stars)}</td>
-                      <td className="mono">
-                        {(() => {
-                          const s = computeStrength(r);
-                          return `${renderStrengthBar(s)} ${s.toFixed(1)} / 10`;
-                        })()}
-                      </td>
-                      <td className="notes">{r.area_of_interest ?? "—"}</td>
-                      <td className="notes">{r.preferred_setup ?? r.entry_type ?? "—"}</td>
-                      <td>{r.entry ?? "-"}</td>
-                      <td>{r.sl ?? "-"}</td>
-                    </tr>
-                  );
-                })
-              ) : (
-                <tr><td colSpan="13" className="emptyRow">No markets load yet. Scan markets or wait for sync.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </CollapsibleCard>
-
-      {showHistory ? (
-        <CollapsibleCard
-          title="History & Performance"
-          className="historyCard"
-          isOpen={openSections.history}
-          onToggle={() => toggleSection("history")}
-          right={
-            <div className="tiny">
-              Closed: {performance.closedCount} • Wins: {performance.wins} • Losses: {performance.losses} • B/E: {performance.breakevens} • Win%: {performance.winRate}% • Sum R: {performance.sumR}
-            </div>
-          }
-        >
-          <div className="perfGrid">
-            <div className="perfBox"><div className="perfLabel">Avg R</div><div className="perfValue">{performance.avgR}</div></div>
-            <div className="perfBox"><div className="perfLabel">Win %</div><div className="perfValue">{performance.winRate}%</div></div>
-            <div className="perfBox"><div className="perfLabel">Loss %</div><div className="perfValue">{performance.lossRate}%</div></div>
-            <div className="perfBox"><div className="perfLabel">B/E %</div><div className="perfValue">{performance.breakevenRate}%</div></div>
-            <div className="perfBox"><div className="perfLabel">Best Win Streak</div><div className="perfValue">{performance.bestWinStreak}</div></div>
-            <div className="perfBox"><div className="perfLabel">Worst Lose Streak</div><div className="perfValue">{performance.bestLoseStreak}</div></div>
-            <div className="perfBox"><div className="perfLabel">Last 30 (R)</div><div className="perfValue">{performance.last30R}</div></div>
-            <div className="perfBox"><div className="perfLabel">Best Market</div><div className="perfValue">{personalBestMarket}</div></div>
-            <div className="perfBox"><div className="perfLabel">Best Setup</div><div className="perfValue" style={{ fontSize: 14 }}>{personalBestSetup}</div></div>
-            <div className="perfBox"><div className="perfLabel">Trades Logged</div><div className="perfValue">{history.length}</div></div>
-          </div>
-
-          <div className="historyActions">
-            <button className="btn small" onClick={clearHistory}>Clear history</button>
-            <span className={`reviewBadge ${performance.closedCount >= 30 ? "ready" : ""}`}>
-              {performance.closedCount >= 30 ? "✅ Review ready (30 trades)" : `Review after 30 trades (${performance.closedCount}/30)`}
-            </span>
-          </div>
-
-          <div className="tableWrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Market</th>
-                  <th>TF</th>
-                  <th>Dir</th>
-                  <th>Mode</th>
-                  <th>Quality</th>
-                  <th>Conf</th>
-                  <th>Entry</th>
-                  <th>SL</th>
-                  <th>TP1</th>
-                  <th>TP2</th>
-                  <th>Outcome</th>
-                  <th>R</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history?.length ? (
-                  [...history].slice(-50).reverse().map((t) => (
-                    <tr
-                      key={t.id}
-                      className={
-                        t.outcome === "TP2" || t.outcome === "TP1_ONLY"
-                          ? "winRow"
-                          : t.outcome === "SL"
-                          ? "lossRow"
-                          : ""
-                      }
-                    >
-                      <td className="tiny">{t.closedAt ? toIso(t.closedAt) : toIso(t.openedAt)}</td>
-                      <td className="mono">{t.symbol}</td>
-                      <td>{t.timeframe}</td>
-                      <td>{t.direction}</td>
-                      <td>{t.entryType || "—"}</td>
-                      <td>{qualityText(t.qualityGrade, t.qualityStars)}</td>
-                      <td>{safeNum(t.confidence, 0)}%</td>
-                      <td>{fmt(t.entry)}</td>
-                      <td>{fmt(t.sl)}</td>
-                      <td>{fmt(t.tp1)}</td>
-                      <td>{fmt(t.tp2 ?? t.tp)}</td>
-                      <td>
-                        <span className={`pill ${outcomeTone(t.outcome)}`}>
-                          {formatOutcomeLabel(t.outcome)}
-                        </span>
-                      </td>
-                      <td>
-                        {t.outcome === "TP2"
-                          ? `+${t.rMult ?? "?"}`
-                          : t.outcome === "TP1_ONLY"
-                          ? `+${t.tp1RMult ?? "?"}`
-                          : t.outcome === "SL"
-                          ? "-1"
-                          : t.outcome === "BE"
-                          ? "0"
-                          : "—"}
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr><td colSpan="13" className="emptyRow">No history yet.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="tiny note">
-            Note: TP1-only closes now count as wins, breakeven stays neutral, and weekly stats should keep climbing through the week instead of waiting until the end.
-          </div>
-        </CollapsibleCard>
-      ) : null}
+      {activeTab !== "Health" ? renderMarketBriefing() : null}
     </div>
   );
-}
+}     
