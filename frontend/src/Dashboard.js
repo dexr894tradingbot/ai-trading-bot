@@ -1013,7 +1013,7 @@ export default function Dashboard() {
     [activeTrade, liveTracker, price]
   );
 
-  const openMarkets = useMemo(() => {
+  const _openMarkets = useMemo(() => {
     const rows = ranked.filter((r) => r.active_trade);
 
     if (activeTrade && !rows.some((r) => r.symbol === activeTrade.symbol)) {
