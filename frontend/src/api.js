@@ -40,6 +40,7 @@ async function postJson(path, body) {
       `${res.status} ${res.statusText} — ${txt || "Request failed"}`
     );
   }
+
   return await res.json();
 }
 
@@ -53,6 +54,7 @@ async function getJson(path) {
       `${res.status} ${res.statusText} — ${txt || "Request failed"}`
     );
   }
+
   return await res.json();
 }
 
@@ -72,7 +74,9 @@ export async function fetchLiveState(symbol, timeframe) {
 export async function fetchHistory({ symbol = "", limit = 50 } = {}) {
   const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 500));
   const qs = new URLSearchParams();
+
   if (symbol) qs.set("symbol", symbol);
+
   qs.set("limit", String(safeLimit));
   return getJson(`/analyze_market/history?${qs.toString()}`);
 }
@@ -81,16 +85,33 @@ export async function fetchPerformance(lastN = 30) {
   const safe = Math.max(1, Math.min(Number(lastN) || 30, 200));
   return getJson(`/analyze_market/performance?last_n=${safe}`);
 }
+
 export async function fetchGlobalState(limit = 100) {
   const safe = Math.max(1, Math.min(Number(limit) || 100, 500));
   return getJson(`/analyze_market/state?limit=${safe}`);
 }
+
+// AUTO TRADE / OWNER DASHBOARD API
+export async function fetchAutoTradeStatus() {
+  return getJson("/analyze_market/auto-trade/status");
+}
+
+export async function updateAutoTradeSettings(settings) {
+  return postJson("/analyze_market/auto-trade/settings", settings);
+}
+
+export async function fetchAutoTradeAccount(account = "demo") {
+  const qs = new URLSearchParams({ account });
+  return getJson(`/analyze_market/auto-trade/account?${qs.toString()}`);
+}
+
 export function getBackendUrl() {
   return BACKEND;
 }
 
 export function getBackendWebSocketUrl() {
   const env = process.env.REACT_APP_BACKEND_URL;
+
   if (env && typeof env === "string" && env.startsWith("http")) {
     return env.replace(/^http/, "ws").replace(/\/$/, "") + "/analyze_market/ws";
   }

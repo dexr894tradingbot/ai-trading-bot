@@ -4,9 +4,13 @@ import {
   analyzeMarket,
   scanMarkets,
   fetchGlobalState,
+  fetchAutoTradeStatus,
+  updateAutoTradeSettings,
+  fetchAutoTradeAccount,
   getBackendWebSocketUrl,
   getBackendUrl,
 } from "./api";
+
 
 const VOLATILITY_OPTIONS = [
   { symbol: "R_10", name: "Volatility 10" },
@@ -36,6 +40,7 @@ const TABS = [
   "Scanner",
   "Chart",
   "History",
+  "Auto Trader",
   "Health",
 ];
 
@@ -894,6 +899,10 @@ export default function Dashboard() {
 
   const [activeTrade, setActiveTrade] = useState(restored?.activeTrade || null);
   const [lastActions, setLastActions] = useState(restored?.lastActions || []);
+  const [autoTradeStatus, setAutoTradeStatus] = useState(null);
+  const [autoAccountInfo, setAutoAccountInfo] = useState(null);
+  const [autoTradeLoading, setAutoTradeLoading] = useState(false);
+  const [autoTradeError, setAutoTradeError] = useState("");
 
   const [history, setHistory] = useState(() => {
     try {
@@ -1061,7 +1070,23 @@ export default function Dashboard() {
   }, [ranked]);
 
   const backendUrl = useMemo(() => getBackendUrl(), []);
+  const refreshAutoTrade = useCallback(async () => {
+  setAutoTradeLoading(true);
+  setAutoTradeError("");
 
+  try {
+    const statusData = await fetchAutoTradeStatus();
+    setAutoTradeStatus(statusData);
+
+    const account = statusData?.account || "demo";
+    const accountData = await fetchAutoTradeAccount(account);
+    setAutoAccountInfo(accountData);
+  } catch (e) {
+    setAutoTradeError(e?.message || "Auto trade refresh failed");
+  } finally {
+    setAutoTradeLoading(false);
+  }
+}, []);
   const copyText = useCallback(async (text) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -1546,6 +1571,15 @@ export default function Dashboard() {
       console.error("Global state sync failed:", e);
     }
   }, [selectedSymbol, timeframe, price]);  
+  useEffect(() => {
+  refreshAutoTrade();
+
+  const id = setInterval(() => {
+    if (!document.hidden) refreshAutoTrade();
+  }, 10000);
+
+  return () => clearInterval(id);
+}, [refreshAutoTrade]);
   useEffect(() => {
     syncGlobalState();
 
@@ -2091,7 +2125,114 @@ export default function Dashboard() {
       </div>
     </SmartCard>
   );
+  const renderAutoTrader = () => (
+  <SmartCard
+    title="Private Auto Trader Control Room"
+    className="sentimentCard"
+    right={
+      <span className={`pill ${autoTradeStatus?.enabled ? "pillWin" : "pillLoss"}`}>
+        {autoTradeStatus?.enabled ? "AUTO ON" : "AUTO OFF"}
+      </span>
+    }
+  >
+    {autoTradeError ? <div className="errorBox">Error: {autoTradeError}</div> : null}
 
+    <div className="perfGrid">
+      <StatBox label="Auto Trade" value={autoTradeStatus?.enabled ? "ON" : "OFF"} />
+      <StatBox label="Account" value={(autoTradeStatus?.account || "demo").toUpperCase()} />
+      <StatBox label="Mode" value={autoTradeStatus?.mode || "deriv_api"} />
+      <StatBox label="Emergency Stop" value={autoTradeStatus?.emergency_stop ? "ACTIVE" : "OFF"} tone={autoTradeStatus?.emergency_stop ? "pillLoss" : "pillWin"} />
+      <StatBox label="Balance" value={autoAccountInfo?.ok ? `${autoAccountInfo.balance} ${autoAccountInfo.currency || ""}` : "—"} />
+      <StatBox label="Login ID" value={autoAccountInfo?.loginid || "—"} small />
+    </div>
+
+    <div className="controls" style={{ marginTop: 14 }}>
+      <button
+        className="btn primary"
+        disabled={autoTradeLoading}
+        onClick={async () => {
+          const next = !autoTradeStatus?.enabled;
+          await updateAutoTradeSettings({ enabled: next });
+          await refreshAutoTrade();
+        }}
+      >
+        {autoTradeStatus?.enabled ? "Turn Auto Trade OFF" : "Turn Auto Trade ON"}
+      </button>
+
+      <button
+        className="btn"
+        disabled={autoTradeLoading}
+        onClick={async () => {
+          const next = autoTradeStatus?.account === "real" ? "demo" : "real";
+          await updateAutoTradeSettings({ account: next });
+          await refreshAutoTrade();
+        }}
+      >
+        Switch to {autoTradeStatus?.account === "real" ? "Demo" : "Real"}
+      </button>
+
+      <button
+        className="btn danger"
+        disabled={autoTradeLoading}
+        onClick={async () => {
+          await updateAutoTradeSettings({ emergency_stop: true, enabled: false });
+          await refreshAutoTrade();
+        }}
+      >
+        Emergency Stop
+      </button>
+
+      <button className="btn" disabled={autoTradeLoading} onClick={refreshAutoTrade}>
+        Refresh
+      </button>
+    </div>
+
+    <div className="reason" style={{ marginTop: 14 }}>
+      <span className="smallText">
+        This panel is private for your dashboard only. Telegram group will still only receive signal, TP, SL, and invalidation updates.
+      </span>
+    </div>
+
+    <div className="tableWrap" style={{ marginTop: 14 }}>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Account</th>
+            <th>Mode</th>
+            <th>Symbol</th>
+            <th>Direction</th>
+            <th>Strategy</th>
+            <th>Entry</th>
+            <th>SL</th>
+            <th>TP1</th>
+            <th>TP2</th>
+          </tr>
+        </thead>
+        <tbody>
+          {autoTradeStatus?.recent_executions?.length ? (
+            [...autoTradeStatus.recent_executions].reverse().map((x, idx) => (
+              <tr key={idx}>
+                <td className="tiny">{toIso(x.executed_at)}</td>
+                <td>{x.account}</td>
+                <td>{x.mode}</td>
+                <td className="mono">{x.symbol}</td>
+                <td>{x.direction}</td>
+                <td>{x.strategy || "—"}</td>
+                <td>{x.entry ?? "—"}</td>
+                <td>{x.sl ?? "—"}</td>
+                <td>{x.tp1 ?? "—"}</td>
+                <td>{x.tp2 ?? "—"}</td>
+              </tr>
+            ))
+          ) : (
+            <tr><td colSpan="10" className="emptyRow">No auto executions yet.</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  </SmartCard>
+);
   const renderHistory = () => (
     <SmartCard title="History & Performance" className="historyCard" right={<span className="tiny">Trades logged: {history.length}</span>}>
       <div className="perfGrid">
@@ -2205,6 +2346,7 @@ export default function Dashboard() {
   );
 
   const renderTab = () => {
+    if (activeTab === "Auto Trader") return renderAutoTrader();
     if (activeTab === "Overview") return renderOverview();
     if (activeTab === "Signal") return renderSignal();
     if (activeTab === "Lot Calculator") return renderLotCalculator();
