@@ -1,7 +1,6 @@
 // frontend/src/Chart.js
 import React, { useEffect, useRef } from "react";
-import { createChart } from "lightweight-charts";
-
+import { createChart, CandlestickSeries, LineSeries } from "lightweight-charts";
 function safeNumber(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
