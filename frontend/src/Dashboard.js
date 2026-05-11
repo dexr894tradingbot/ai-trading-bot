@@ -1022,28 +1022,8 @@ export default function Dashboard() {
     [activeTrade, liveTracker, price]
   );
 
-  const _openMarkets = useMemo(() => {
-    const rows = ranked.filter((r) => r.active_trade);
 
-    if (activeTrade && !rows.some((r) => r.symbol === activeTrade.symbol)) {
-      return [
-        {
-          symbol: activeTrade.symbol,
-          direction: activeTrade.direction,
-          confidence: activeTrade.confidence,
-          active_trade: true,
-          market_state: marketState,
-          preferred_setup: preferredSetup,
-          quality_grade: activeTrade.quality_grade || qualityGrade,
-          quality_stars: activeTrade.quality_stars || qualityStars,
-          trade_action: activeTrade.trade_action || tradeAction,
-        },
-        ...rows,
-      ];
-    }
-
-    return rows;
-  }, [ranked, activeTrade, marketState, preferredSetup, qualityGrade, qualityStars, tradeAction]);
+  
 
   const topPick = useMemo(() => {
     if (!ranked?.length) return null;
