@@ -187,7 +187,6 @@ LAST_TELEGRAM_TS: Dict[str, int] = {}
 LAST_MARKET_STATE: Dict[str, str] = {}
 LAST_PROGRESS_ALERT: Dict[str, int] = {}
 
-
 def restore_state_from_db() -> None:
     global ACTIVE_TRADES, TRADE_HISTORY, RISK_STATE
 
@@ -211,13 +210,11 @@ def restore_state_from_db() -> None:
     except Exception as e:
         print("restore_state_from_db error:", e)
 
-
 def persist_risk_state() -> None:
     try:
         save_json_state("risk_state", RISK_STATE)
     except Exception as e:
         print("persist_risk_state error:", e)
-
 
 # =========================================================
 # REQUEST MODELS
@@ -226,11 +223,9 @@ class AnalyzeRequest(BaseModel):
     symbol: str
     timeframe: str = ENTRY_TF
 
-
 class ScanRequest(BaseModel):
     timeframe: str = ENTRY_TF
     symbols: List[str] = ["R_10", "R_25", "R_50", "R_75", "R_100"]
-
 
 # =========================================================
 # BASIC HELPERS
@@ -238,12 +233,10 @@ class ScanRequest(BaseModel):
 def _today_key() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
-
 def _week_key() -> str:
     now = datetime.now()
     iso = now.isocalendar()
     return f"{iso.year}-W{iso.week:02d}"
-
 
 def _reset_daily_if_needed() -> None:
     dk = _today_key()
@@ -252,22 +245,17 @@ def _reset_daily_if_needed() -> None:
         RISK_STATE["daily_R"] = 0.0
         persist_risk_state()
 
-
 def _now_ts() -> int:
     return int(time.time())
-
 
 def _trade_key(symbol: str, tf: str) -> str:
     return f"{symbol}:{tf}"
 
-
 def _active_total() -> int:
     return len(ACTIVE_TRADES)
 
-
 def _active_symbol_count(symbol: str) -> int:
     return sum(1 for t in ACTIVE_TRADES.values() if t.get("symbol") == symbol)
-
 
 def _push_history(item: Dict[str, Any]) -> None:
     TRADE_HISTORY.append(item)
@@ -279,20 +267,17 @@ def _push_history(item: Dict[str, Any]) -> None:
     except Exception as e:
         print("upsert_trade in _push_history error:", e)
 
-
 def _find_history_index(trade_id: str) -> Optional[int]:
     for i in range(len(TRADE_HISTORY) - 1, -1, -1):
         if TRADE_HISTORY[i].get("trade_id") == trade_id:
             return i
     return None
 
-
 def safe_float(x: Any, fallback: Optional[float] = 0.0) -> Optional[float]:
     try:
         return float(x)
     except Exception:
         return fallback
-
 
 def safe_int(x: Any, fallback: int = 0) -> int:
     try:
@@ -303,10 +288,8 @@ def _requested_chart_tf(raw_tf: Optional[str]) -> str:
     tf = (raw_tf or ENTRY_TF).strip()
     return tf if tf in ALLOWED_TFS else ENTRY_TF
 
-
 def _live_cache_key(symbol: str, timeframe: str, count: int) -> str:
     return f"{symbol}:{timeframe}:{count}"
-
 
 async def _cached_fetch_candles(
     app_id: str,
@@ -330,7 +313,6 @@ async def _cached_fetch_candles(
     LIVE_CACHE[key] = {"ts": now, "candles": candles or []}
     return candles or []
 
-
 async def _fetch_first_supported_timeframe(
     app_id: str,
     symbol: str,
@@ -346,28 +328,23 @@ async def _fetch_first_supported_timeframe(
             continue
     return [], None
 
-
 def fmt_price(x: Optional[float]) -> str:
     if x is None:
         return "-"
     return f"{float(x):.5f}"
-
 
 def fmt_range(low: Optional[float], high: Optional[float]) -> str:
     if low is None or high is None:
         return "-"
     return f"{float(low):.5f} - {float(high):.5f}"
 
-
 def closed_candles(candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return candles[:-1] if len(candles) >= 3 else candles
-
 
 def distance_in_atr(price_a: Optional[float], price_b: Optional[float], atr_value: float) -> float:
     if price_a is None or price_b is None or atr_value <= 0:
         return 999999.0
     return abs(float(price_a) - float(price_b)) / max(1e-9, atr_value)
-
 
 def pool_level(pool: Optional[Dict[str, Any]]) -> Optional[float]:
     if not pool:
@@ -375,12 +352,10 @@ def pool_level(pool: Optional[Dict[str, Any]]) -> Optional[float]:
     lvl = pool.get("level")
     return safe_float(lvl, None) if lvl is not None else None
 
-
 def zone_mid(zone: Optional[Dict[str, Any]]) -> Optional[float]:
     if not zone:
         return None
     return (safe_float(zone["low"]) + safe_float(zone["high"])) / 2.0
-
 
 def recent_push_against_room(
     direction: str,
@@ -397,7 +372,6 @@ def recent_push_against_room(
 
     move = last_close - first_open if direction == "BUY" else first_open - last_close
     return move >= atr_value * RECENT_PUSH_MAX_ATR
-
 
 def entry_too_close_to_opposing_pool(
     direction: str,
@@ -419,7 +393,6 @@ def entry_too_close_to_opposing_pool(
         return False
     return 0 <= (entry - low_pool) <= atr_value * LATE_ENTRY_NEAR_POOL_ATR
 
-
 def entry_too_far_from_zone_mid(
     entry: float,
     zone: Optional[Dict[str, Any]],
@@ -432,7 +405,6 @@ def entry_too_far_from_zone_mid(
         return False
     return abs(entry - mid) > atr_value * MAX_ENTRY_DISTANCE_FROM_ZONE_MID_ATR
 
-
 def not_enough_remaining_room(
     direction: str,
     entry: float,
@@ -443,7 +415,6 @@ def not_enough_remaining_room(
         return False
     remaining = (tp2 - entry) if direction == "BUY" else (entry - tp2)
     return remaining < atr_value * MIN_REMAINING_ROOM_ATR
-
 
 def too_close_to_tp2_after_entry(
     direction: str,
@@ -456,12 +427,10 @@ def too_close_to_tp2_after_entry(
     remaining = (tp2 - entry) if direction == "BUY" else (entry - tp2)
     return remaining <= atr_value * LATE_ENTRY_NEAR_TP2_ATR
 
-
 def confirmation_body_too_large(last_candle: Dict[str, float], atr_value: float) -> bool:
     if atr_value <= 0:
         return False
     return candle_body(last_candle) > atr_value * CONFIRMATION_CANDLE_MAX_BODY_ATR
-
 
 def trade_progress_percent_fn(
     direction: str,
@@ -485,7 +454,6 @@ def trade_progress_percent_fn(
         return max(0.0, min(100.0, pct))
     except Exception:
         return 0.0
-
 
 def build_live_trade_tracker(trade: Dict[str, Any], current_price: float) -> Dict[str, Any]:
     direction = trade.get("direction", "HOLD")
@@ -526,7 +494,6 @@ def build_live_trade_tracker(trade: Dict[str, Any], current_price: float) -> Dic
         "trade_action": trade.get("trade_action"),
         "action_message": trade.get("action_message"),
     }
-
 
 def build_daily_market_outlook(ranked_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     actionable = [r for r in ranked_rows if r.get("direction") in ("BUY", "SELL")]
@@ -589,7 +556,6 @@ def detect_extreme_position(candles: List[Dict[str, float]]) -> Dict[str, bool]:
         "is_bottom": position <= BOTTOM_ZONE_RATIO,
         "is_top": position >= TOP_ZONE_RATIO,
     }
-
 
 def decide_trade_action(
     signal: Dict[str, Any],
@@ -662,7 +628,6 @@ def decide_trade_action(
         "message": "❌ Weak setup → Do not take trade"
     }
 
-
 def attach_trade_action(
     signal: Dict[str, Any],
     context: Dict[str, Any],
@@ -684,7 +649,6 @@ def attach_trade_action(
 
     return signal
 
-
 # =========================================================
 # TELEGRAM / PERFORMANCE
 # =========================================================
@@ -702,7 +666,6 @@ async def maybe_send_telegram(key: str, min_gap_sec: int, text: str) -> bool:
 
     LAST_TELEGRAM_TS[key] = now
     return True
-
 
 def build_signal_message(symbol: str, timeframe: str, signal: Dict[str, Any]) -> str:
     direction = signal.get("direction", "-")
@@ -751,7 +714,6 @@ def build_briefing_message(symbol: str, timeframe: str, briefing: Dict[str, Any]
         f"Liquidity Above: {briefing.get('liquidity_above', '-')}"
     )
 
-
 def build_watch_message(symbol: str, timeframe: str, briefing: Dict[str, Any]) -> str:
     return (
         f"👀 WATCH — {symbol} ({timeframe})\n\n"
@@ -761,7 +723,6 @@ def build_watch_message(symbol: str, timeframe: str, briefing: Dict[str, Any]) -
         f"Trigger:\n{briefing.get('confirmation_needed', '-')}"
     )
 
-
 def build_invalidated_message(symbol: str, timeframe: str, briefing: Dict[str, Any]) -> str:
     return (
         f"⚠️ INVALIDATED — {symbol} ({timeframe})\n\n"
@@ -769,7 +730,6 @@ def build_invalidated_message(symbol: str, timeframe: str, briefing: Dict[str, A
         f"State: {briefing.get('market_state', '-')}\n"
         f"Reason: {briefing.get('invalidation', '-')}"
     )
-
 
 def build_tp1_message(symbol: str, timeframe: str, trade: Dict[str, Any]) -> str:
     return (
@@ -779,7 +739,6 @@ def build_tp1_message(symbol: str, timeframe: str, trade: Dict[str, Any]) -> str
         f"Partial secured. Runner active."
     )
 
-
 def build_closed_message(symbol: str, timeframe: str, trade: Dict[str, Any], outcome: str, price: float) -> str:
     if outcome == "TP2":
         return f"🏆 TP2 HIT — {symbol} ({timeframe})\n\nExit: {round(price,5)}"
@@ -788,7 +747,6 @@ def build_closed_message(symbol: str, timeframe: str, trade: Dict[str, Any], out
     if outcome == "BE":
         return f"⚖️ BREAKEVEN — {symbol} ({timeframe})\n\nExit: {round(price,5)}"
     return f"🛑 STOP LOSS — {symbol} ({timeframe})\n\nExit: {round(price,5)}"
-
 
 def _performance(last_n: int) -> Dict[str, Any]:
     last_n = max(1, min(int(last_n), 200))
@@ -809,7 +767,6 @@ def _performance(last_n: int) -> Dict[str, Any]:
         "win_rate": round(win_rate, 2),
     }
 
-
 def _weekly_performance() -> Dict[str, Any]:
     wk = _week_key()
     closed = [
@@ -828,7 +785,6 @@ def _weekly_performance() -> Dict[str, Any]:
         "losses": losses,
     }
 
-
 # =========================================================
 # INDICATORS
 # =========================================================
@@ -840,7 +796,6 @@ def ema_last(values: List[float], period: int) -> Optional[float]:
     for v in values[1:]:
         ema = v * k + ema * (1 - k)
     return ema
-
 
 def atr_last(candles: List[Dict[str, float]], period: int = ATR_PERIOD) -> Optional[float]:
     if len(candles) < period + 1:
@@ -857,27 +812,21 @@ def atr_last(candles: List[Dict[str, float]], period: int = ATR_PERIOD) -> Optio
     window = trs[-period:]
     return sum(window) / len(window) if window else None
 
-
 def candle_body(c: Dict[str, float]) -> float:
     return abs(safe_float(c["close"], 0.0) - safe_float(c["open"], 0.0))
 
-
 def candle_range(c: Dict[str, float]) -> float:
     return safe_float(c["high"], 0.0) - safe_float(c["low"], 0.0)
-
 
 def candle_body_ratio(c: Dict[str, float]) -> float:
     rng = max(1e-9, candle_range(c))
     return candle_body(c) / rng
 
-
 def is_bullish(c: Dict[str, float]) -> bool:
     return safe_float(c["close"], 0.0) > safe_float(c["open"], 0.0)
 
-
 def is_bearish(c: Dict[str, float]) -> bool:
     return safe_float(c["close"], 0.0) < safe_float(c["open"], 0.0)
-
 
 def upper_wick(c: Dict[str, float]) -> float:
     o = safe_float(c["open"], 0.0)
@@ -885,33 +834,27 @@ def upper_wick(c: Dict[str, float]) -> float:
     h = safe_float(c["high"], 0.0)
     return h - max(o, cl)
 
-
 def lower_wick(c: Dict[str, float]) -> float:
     o = safe_float(c["open"], 0.0)
     cl = safe_float(c["close"], 0.0)
     l = safe_float(c["low"], 0.0)
     return min(o, cl) - l
 
-
 def candle_closes_near_high(c: Dict[str, float], threshold: float = 0.70) -> bool:
     rng = max(1e-9, candle_range(c))
     pos = (safe_float(c["close"], 0.0) - safe_float(c["low"], 0.0)) / rng
     return pos >= threshold
-
 
 def candle_closes_near_low(c: Dict[str, float], threshold: float = 0.30) -> bool:
     rng = max(1e-9, candle_range(c))
     pos = (safe_float(c["close"], 0.0) - safe_float(c["low"], 0.0)) / rng
     return pos <= threshold
 
-
 def candle_closes_strong_bullish(c: Dict[str, float]) -> bool:
     return is_bullish(c) and candle_body_ratio(c) >= MIN_CONFIRMATION_BODY_RATIO
 
-
 def candle_closes_strong_bearish(c: Dict[str, float]) -> bool:
     return is_bearish(c) and candle_body_ratio(c) >= MIN_CONFIRMATION_BODY_RATIO
-
 
 def bullish_engulfing(prev: Dict[str, float], curr: Dict[str, float]) -> bool:
     return (
@@ -919,7 +862,6 @@ def bullish_engulfing(prev: Dict[str, float], curr: Dict[str, float]) -> bool:
         and is_bullish(curr)
         and safe_float(curr["close"], 0.0) > safe_float(prev["high"], 0.0)
     )
-
 
 def bearish_engulfing(prev: Dict[str, float], curr: Dict[str, float]) -> bool:
     return (
@@ -946,7 +888,6 @@ def strong_displacement(candle: Dict[str, float], atr_value: float, direction: s
 
     return True
 
-
 def strong_rejection(candle: Dict[str, float], direction: str) -> bool:
     ratio = candle_body_ratio(candle)
     uw = upper_wick(candle)
@@ -959,7 +900,6 @@ def strong_rejection(candle: Dict[str, float], direction: str) -> bool:
         return is_bearish(candle) and (ratio >= 0.28 or uw >= body * 0.5)
     return False
 
-
 def opposite_rejection_block(candle: Dict[str, float], intended_direction: str) -> bool:
     body = max(1e-9, candle_body(candle))
     uw = upper_wick(candle)
@@ -969,18 +909,15 @@ def opposite_rejection_block(candle: Dict[str, float], intended_direction: str) 
         return is_bearish(candle) and uw >= body * EXHAUSTION_WICK_BODY_RATIO
     return is_bullish(candle) and lw >= body * EXHAUSTION_WICK_BODY_RATIO
 
-
 def is_impulse_candle(candle: Dict[str, float], atr_value: float) -> bool:
     if atr_value <= 0:
         return False
     return candle_body(candle) >= atr_value * NO_TRADE_AFTER_IMPULSE_ATR
 
-
 def too_far_from_ema(price: float, ema20: float, atr_value: float) -> bool:
     if atr_value <= 0:
         return False
     return abs(price - ema20) >= atr_value * NO_TRADE_IF_TOO_FAR_FROM_EMA
-
 
 def valid_pullback(direction: str, candles: List[Dict[str, float]], ema20: float, atr_value: float) -> bool:
     recent = candles[-PULLBACK_LOOKBACK:] if len(candles) >= PULLBACK_LOOKBACK else candles
@@ -995,7 +932,6 @@ def valid_pullback(direction: str, candles: List[Dict[str, float]], ema20: float
             if safe_float(c["high"], 0.0) >= ema20 - atr_value * EMA_PULLBACK_TOLERANCE_ATR:
                 return True
     return False
-
 
 def recent_exhaustion_against_trade(
     direction: str,
@@ -1020,7 +956,6 @@ def recent_exhaustion_against_trade(
                 return True
 
     return False
-
 
 def market_is_too_choppy(candles: List[Dict[str, float]], atr_value: float) -> bool:
     if len(candles) < CHOP_LOOKBACK or atr_value <= 0:
@@ -1049,7 +984,6 @@ def market_is_too_choppy(candles: List[Dict[str, float]], atr_value: float) -> b
         return True
 
     return False
-
 
 def breakout_retest_detected(
     direction: str,
@@ -1083,7 +1017,6 @@ def breakout_retest_detected(
     confirm = candle_closes_strong_bearish(last) or bearish_engulfing(breakout, last)
     return broke and retest and confirm
 
-
 def confirmation_candle_present(
     direction: str,
     candles: List[Dict[str, float]],
@@ -1113,7 +1046,6 @@ def confirmation_candle_present(
         or (is_bearish(last) and candle_closes_near_low(last, 0.40))
     )
 
-
 def get_ema_pullback_zone(
     direction: str,
     ema20: float,
@@ -1133,7 +1065,6 @@ def get_ema_pullback_zone(
         "high": round(high, 5),
         "touches": 1,
     }
-
 
 def trend_alignment_score(
     entry_trend: str,
@@ -1164,13 +1095,11 @@ def get_recent_local_high(candles: List[Dict[str, float]], lookback: int = 4) ->
     sample = candles[-(lookback + 1):-1]
     return max(safe_float(c["high"], 0.0) for c in sample) if sample else None
 
-
 def get_recent_local_low(candles: List[Dict[str, float]], lookback: int = 4) -> Optional[float]:
     if len(candles) < lookback + 1:
         return None
     sample = candles[-(lookback + 1):-1]
     return min(safe_float(c["low"], 0.0) for c in sample) if sample else None
-
 
 def get_trend_memory(candles: List[Dict[str, float]]) -> Dict[str, Any]:
     closes = [safe_float(c["close"], 0.0) for c in candles]
@@ -1208,7 +1137,6 @@ def get_trend_memory(candles: List[Dict[str, float]]) -> Dict[str, Any]:
         "ema50": ema50_now,
     }
 
-
 # =========================================================
 # SWINGS / STRUCTURE / ZONES / CONTEXT
 # =========================================================
@@ -1233,7 +1161,6 @@ def find_swings(candles: List[Dict[str, float]], swing_len: int = SWING_LEN) -> 
             lows.append({"index": i, "price": l})
 
     return {"highs": highs, "lows": lows}
-
 
 def get_structure_state(candles: List[Dict[str, float]], atr_value: float) -> Dict[str, Any]:
     data = candles[-STRUCTURE_LOOKBACK:] if len(candles) > STRUCTURE_LOOKBACK else candles
@@ -1286,7 +1213,6 @@ def get_structure_state(candles: List[Dict[str, float]], atr_value: float) -> Di
         "swings": swings,
     }
 
-
 def _cluster_levels(levels: List[float], tolerance: float) -> List[List[float]]:
     if not levels:
         return []
@@ -1301,7 +1227,6 @@ def _cluster_levels(levels: List[float], tolerance: float) -> List[List[float]]:
             groups.append([p])
 
     return groups
-
 
 def reaction_zones(
     candles: List[Dict[str, float]],
@@ -1367,7 +1292,6 @@ def micro_reaction_zones(candles: List[Dict[str, float]], atr_value: float) -> D
         swing_len=MICRO_SWING_LEN,
     )
 
-
 def liquidity_pools(candles: List[Dict[str, float]], atr_value: float) -> Dict[str, Any]:
     if len(candles) < 30 or atr_value <= 0:
         return {"high_pools": [], "low_pools": [], "nearest_high_pool": None, "nearest_low_pool": None}
@@ -1416,14 +1340,12 @@ def liquidity_pools(candles: List[Dict[str, float]], atr_value: float) -> Dict[s
         "nearest_low_pool": nearest_low_pool,
     }
 
-
 def candle_interacts_with_zone(candle: Dict[str, float], zone: Dict[str, Any]) -> bool:
     low = safe_float(candle["low"], 0.0)
     high = safe_float(candle["high"], 0.0)
     z_low = safe_float(zone["low"], 0.0)
     z_high = safe_float(zone["high"], 0.0)
     return not (high < z_low or low > z_high)
-
 
 def zone_reaction_metrics(
     candles: List[Dict[str, float]],
@@ -1487,7 +1409,6 @@ def zone_reaction_metrics(
         "recency_score": recency_score,
     }
 
-
 def score_zone(
     direction: str,
     zone: Dict[str, Any],
@@ -1534,7 +1455,6 @@ def score_zone(
 
     return score
 
-
 def pick_best_trade_zone(
     direction: str,
     zones: Dict[str, Any],
@@ -1562,7 +1482,6 @@ def pick_best_trade_zone(
             best_zone = z
 
     return best_zone
-
 
 # =========================================================
 # CONTINUATION / AOI SELECTION
@@ -1671,7 +1590,6 @@ def pick_closest_actionable_zone(
 
     return ranked[0][1] if ranked else None
 
-
 # =========================================================
 # MARKET INTELLIGENCE
 # =========================================================
@@ -1714,7 +1632,6 @@ def combine_bias(
 
     return "NEUTRAL"
 
-
 def classify_market_state(
     combined_bias: str,
     trend_strength: float,
@@ -1735,7 +1652,6 @@ def classify_market_state(
         return "TRENDING PULLBACK"
 
     return "WEAK TREND"
-
 
 def detect_reversal_risk(
     combined_bias: str,
@@ -1794,7 +1710,6 @@ def detect_reversal_risk(
         return "MEDIUM"
 
     return "LOW"
-
 
 def build_market_context(
     entry_data: List[Dict[str, float]],
@@ -1958,7 +1873,6 @@ def build_market_context(
         ),
     }
 
-
 # =========================================================
 # ENTRY TIMING / EXECUTION HELPERS
 # =========================================================
@@ -1983,7 +1897,6 @@ def compute_smart_entry(
     if breakout_confirm:
         return max(last_close, z_low - atr_value * 0.10)
     return max(last_close, z_low)
-
 
 def build_entry_instruction(
     direction: str,
@@ -2023,7 +1936,6 @@ def build_entry_instruction(
         f"ENTER ONLY INSIDE SELL ZONE {fmt_range(z_low, z_high)} after bearish confirmation. Skip if price drops below {fmt_price(runaway)} before entry.",
         "ENTER_ON_CONFIRMATION",
     )
-
 
 def score_entry_quality(
     direction: str,
@@ -2070,7 +1982,6 @@ def score_entry_quality(
 
     return max(0, min(100, int(score)))
 
-
 # =========================================================
 # TRADE SETUP DETECTION
 # =========================================================
@@ -2097,7 +2008,6 @@ def price_touched_zone_recently(
                 return True
 
     return False
-
 
 def bars_since_zone_touch(
     direction: str,
@@ -2176,11 +2086,9 @@ def select_targets(direction, entry, zones, pools, min_distance):
 
     return {"tp1": tp1, "tp2": tp2}
 
-
 def enough_room_to_run(direction: str, entry: float, tp2: float, atr_value: float) -> bool:
     projected = abs(tp2 - entry)
     return projected >= atr_value * MIN_EXPANSION_ATR
-
 
 def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, Any]) -> Dict[str, Any]:
     if len(entry_data) < 30:
@@ -2639,7 +2547,6 @@ def trail_stop_suggestion(candles_tf: List[Dict[str, float]], direction: str, at
 
     return max(safe_float(c["high"], 0.0) for c in data) + buf
 
-
 async def open_new_trade(symbol: str, timeframe: str, signal: Dict[str, Any]) -> Dict[str, Any]:
     trade_id = str(uuid.uuid4())
     trade = dict(signal)
@@ -2676,7 +2583,6 @@ async def open_new_trade(symbol: str, timeframe: str, signal: Dict[str, Any]) ->
 
     return trade
 
-
 async def close_trade(symbol: str, timeframe: str, trade: Dict[str, Any], outcome: str, price: float) -> Dict[str, Any]:
     trade["status"] = "CLOSED"
     trade["outcome"] = outcome
@@ -2712,7 +2618,6 @@ async def close_trade(symbol: str, timeframe: str, trade: Dict[str, Any], outcom
     )
 
     return trade
-
 
 async def manage_active_trade(
     symbol: str,
@@ -2849,7 +2754,6 @@ async def manage_active_trade(
 
     return {"signal": trade, "active": True, "actions": actions}
 
-
 # =========================================================
 # TELEGRAM SMART MARKET STATE + CORE
 # =========================================================
@@ -2899,7 +2803,6 @@ async def maybe_emit_market_messages(symbol: str, timeframe: str, context: Dict[
             min_gap_sec=TELEGRAM_MIN_BRIEFING_GAP_SEC,
             text=build_briefing_message(symbol, timeframe, context),
         )
-
 
 async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_telegram: bool = True):
     _reset_daily_if_needed()
@@ -3135,14 +3038,12 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
         "max_active_per_symbol": MAX_ACTIVE_PER_SYMBOL,
     }
 
-
 # =========================================================
 # ROUTES
 # =========================================================
 @router.post("/analyze")
 async def analyze(req: AnalyzeRequest):
     return await analyze_market(req)
-
 
 @router.post("/scan")
 async def scan(req: ScanRequest):
@@ -3245,7 +3146,6 @@ async def scan(req: ScanRequest):
         "max_active_per_symbol": MAX_ACTIVE_PER_SYMBOL,
     }
 
-
 @router.get("/live")
 async def live_market(symbol: str = "R_10", timeframe: str = ENTRY_TF) -> Dict[str, Any]:
     chart_tf = _requested_chart_tf(timeframe)
@@ -3282,7 +3182,6 @@ async def live_market(symbol: str = "R_10", timeframe: str = ENTRY_TF) -> Dict[s
         "updated_at": _now_ts(),
     }
 
-
 @router.get("/history")
 async def history(symbol: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
     limit = max(1, min(int(limit), 500))
@@ -3293,14 +3192,12 @@ async def history(symbol: Optional[str] = None, limit: int = 50) -> Dict[str, An
 
     return {"count": len(items[-limit:]), "items": items[-limit:]}
 
-
 @router.get("/performance")
 async def performance(last_n: int = PERFORMANCE_REVIEW_N) -> Dict[str, Any]:
     return {
         **_performance(last_n),
         "weekly": _weekly_performance(),
     }
-
 
 @router.get("/state")
 async def state(limit: int = 100) -> Dict[str, Any]:
@@ -3320,7 +3217,6 @@ async def state(limit: int = 100) -> Dict[str, Any]:
         "max_active_per_symbol": MAX_ACTIVE_PER_SYMBOL,
         "server_time": _now_ts(),
     }
-
 
 @router.websocket("/ws")
 async def websocket_live(ws: WebSocket):
