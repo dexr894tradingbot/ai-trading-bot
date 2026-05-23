@@ -126,15 +126,3 @@ export function getBackendWebSocketUrl() {
 
   return `${wsProtocol}//${backendHost}/analyze_market/ws`;
 }
-export async function fetchAutoTradeStatus() {
-  return getJson("/analyze_market/auto-trade/status");
-}
-
-export async function updateAutoTradeSettings(settings) {
-  return postJson("/analyze_market/auto-trade/settings", settings);
-}
-
-export async function fetchAutoTradeAccount(account = "demo") {
-  const qs = new URLSearchParams({ account });
-  return getJson(`/analyze_market/auto-trade/account?${qs.toString()}`);
-}
