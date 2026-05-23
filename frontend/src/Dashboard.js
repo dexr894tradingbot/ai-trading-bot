@@ -11,7 +11,6 @@ import {
   getBackendUrl,
 } from "./api";
 
-
 const VOLATILITY_OPTIONS = [
   { symbol: "R_10", name: "Volatility 10" },
   { symbol: "R_25", name: "Volatility 25" },
@@ -38,6 +37,7 @@ const TABS = [
   "Daily Stats",
   "Weekly Stats",
   "Scanner",
+  "Chart",
   "History",
   "Auto Trader",
   "Health",
@@ -832,6 +832,10 @@ export default function Dashboard() {
   const [status, setStatus] = useState("IDLE");
   const [error, setError] = useState("");
 
+  const [autoTradeStatus, setAutoTradeStatus] = useState(null);
+  const [autoTradeLoading, setAutoTradeLoading] = useState(false);
+  const [autoTradeError, setAutoTradeError] = useState("");
+
   const [candles, setCandles] = useState(restored?.candles || []);
   const [supports, setSupports] = useState(restored?.supports || []);
   const [resistances, setResistances] = useState(restored?.resistances || []);
@@ -898,10 +902,6 @@ export default function Dashboard() {
 
   const [activeTrade, setActiveTrade] = useState(restored?.activeTrade || null);
   const [lastActions, setLastActions] = useState(restored?.lastActions || []);
-  const [autoTradeStatus, setAutoTradeStatus] = useState(null);
-  const [autoAccountInfo, setAutoAccountInfo] = useState(null);
-  const [autoTradeLoading, setAutoTradeLoading] = useState(false);
-  const [autoTradeError, setAutoTradeError] = useState("");
 
   const [history, setHistory] = useState(() => {
     try {
@@ -1021,8 +1021,29 @@ export default function Dashboard() {
     [activeTrade, liveTracker, price]
   );
 
+  // eslint-disable-next-line no-unused-vars
+  const openMarkets = useMemo(() => {
+    const rows = ranked.filter((r) => r.active_trade);
 
-  
+    if (activeTrade && !rows.some((r) => r.symbol === activeTrade.symbol)) {
+      return [
+        {
+          symbol: activeTrade.symbol,
+          direction: activeTrade.direction,
+          confidence: activeTrade.confidence,
+          active_trade: true,
+          market_state: marketState,
+          preferred_setup: preferredSetup,
+          quality_grade: activeTrade.quality_grade || qualityGrade,
+          quality_stars: activeTrade.quality_stars || qualityStars,
+          trade_action: activeTrade.trade_action || tradeAction,
+        },
+        ...rows,
+      ];
+    }
+
+    return rows;
+  }, [ranked, activeTrade, marketState, preferredSetup, qualityGrade, qualityStars, tradeAction]);
 
   const topPick = useMemo(() => {
     if (!ranked?.length) return null;
@@ -1049,23 +1070,7 @@ export default function Dashboard() {
   }, [ranked]);
 
   const backendUrl = useMemo(() => getBackendUrl(), []);
-  const refreshAutoTrade = useCallback(async () => {
-  setAutoTradeLoading(true);
-  setAutoTradeError("");
 
-  try {
-    const statusData = await fetchAutoTradeStatus();
-    setAutoTradeStatus(statusData);
-
-    const account = statusData?.account || "demo";
-    const accountData = await fetchAutoTradeAccount(account);
-    setAutoAccountInfo(accountData);
-  } catch (e) {
-    setAutoTradeError(e?.message || "Auto trade refresh failed");
-  } finally {
-    setAutoTradeLoading(false);
-  }
-}, []);
   const copyText = useCallback(async (text) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -1453,7 +1458,7 @@ export default function Dashboard() {
       setStatus("ANALYZING");
 
       try {
-        const data = await withTimeout(analyzeMarket(symbol, tf), 60000, "Analyze");
+        const data = await withTimeout(analyzeMarket(symbol, tf), 15000, "Analyze");
         if (requestId !== analyzeRequestRef.current) return null;
 
         const norm = normalizeAnalyzeResponse(data);
@@ -1476,7 +1481,7 @@ export default function Dashboard() {
 
   const syncGlobalState = useCallback(async () => {
     try {
-      const data = await withTimeout(fetchGlobalState(200), 30000, "Global state");
+      const data = await withTimeout(fetchGlobalState(200), 12000, "Global state");
 
       const activeTrades = Array.isArray(data?.active_trades) ? data.active_trades : [];
       const backendHistory = Array.isArray(data?.history) ? data.history : [];
@@ -1551,15 +1556,6 @@ export default function Dashboard() {
     }
   }, [selectedSymbol, timeframe, price]);  
   useEffect(() => {
-  refreshAutoTrade();
-
-  const id = setInterval(() => {
-    if (!document.hidden) refreshAutoTrade();
-  }, 10000);
-
-  return () => clearInterval(id);
-}, [refreshAutoTrade]);
-  useEffect(() => {
     syncGlobalState();
 
     const id = setInterval(() => {
@@ -1580,7 +1576,7 @@ export default function Dashboard() {
     setStatus("SCANNING");
 
     try {
-      const data = await withTimeout(scanMarkets(symbolsList, timeframe), 60000, "Scan");
+      const data = await withTimeout(scanMarkets(symbolsList, timeframe), 15000, "Scan");
       const newRanked = Array.isArray(data?.ranked) ? data.ranked : Array.isArray(data) ? data : [];
 
       newRanked.sort((a, b) => {
@@ -2104,114 +2100,7 @@ export default function Dashboard() {
       </div>
     </SmartCard>
   );
-  const renderAutoTrader = () => (
-  <SmartCard
-    title="Private Auto Trader Control Room"
-    className="sentimentCard"
-    right={
-      <span className={`pill ${autoTradeStatus?.enabled ? "pillWin" : "pillLoss"}`}>
-        {autoTradeStatus?.enabled ? "AUTO ON" : "AUTO OFF"}
-      </span>
-    }
-  >
-    {autoTradeError ? <div className="errorBox">Error: {autoTradeError}</div> : null}
 
-    <div className="perfGrid">
-      <StatBox label="Auto Trade" value={autoTradeStatus?.enabled ? "ON" : "OFF"} />
-      <StatBox label="Account" value={(autoTradeStatus?.account || "demo").toUpperCase()} />
-      <StatBox label="Mode" value={autoTradeStatus?.mode || "deriv_api"} />
-      <StatBox label="Emergency Stop" value={autoTradeStatus?.emergency_stop ? "ACTIVE" : "OFF"} tone={autoTradeStatus?.emergency_stop ? "pillLoss" : "pillWin"} />
-      <StatBox label="Balance" value={autoAccountInfo?.ok ? `${autoAccountInfo.balance} ${autoAccountInfo.currency || ""}` : "—"} />
-      <StatBox label="Login ID" value={autoAccountInfo?.loginid || "—"} small />
-    </div>
-
-    <div className="controls" style={{ marginTop: 14 }}>
-      <button
-        className="btn primary"
-        disabled={autoTradeLoading}
-        onClick={async () => {
-          const next = !autoTradeStatus?.enabled;
-          await updateAutoTradeSettings({ enabled: next });
-          await refreshAutoTrade();
-        }}
-      >
-        {autoTradeStatus?.enabled ? "Turn Auto Trade OFF" : "Turn Auto Trade ON"}
-      </button>
-
-      <button
-        className="btn"
-        disabled={autoTradeLoading}
-        onClick={async () => {
-          const next = autoTradeStatus?.account === "real" ? "demo" : "real";
-          await updateAutoTradeSettings({ account: next });
-          await refreshAutoTrade();
-        }}
-      >
-        Switch to {autoTradeStatus?.account === "real" ? "Demo" : "Real"}
-      </button>
-
-      <button
-        className="btn danger"
-        disabled={autoTradeLoading}
-        onClick={async () => {
-          await updateAutoTradeSettings({ emergency_stop: true, enabled: false });
-          await refreshAutoTrade();
-        }}
-      >
-        Emergency Stop
-      </button>
-
-      <button className="btn" disabled={autoTradeLoading} onClick={refreshAutoTrade}>
-        Refresh
-      </button>
-    </div>
-
-    <div className="reason" style={{ marginTop: 14 }}>
-      <span className="smallText">
-        This panel is private for your dashboard only. Telegram group will still only receive signal, TP, SL, and invalidation updates.
-      </span>
-    </div>
-
-    <div className="tableWrap" style={{ marginTop: 14 }}>
-      <table className="table">
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>Account</th>
-            <th>Mode</th>
-            <th>Symbol</th>
-            <th>Direction</th>
-            <th>Strategy</th>
-            <th>Entry</th>
-            <th>SL</th>
-            <th>TP1</th>
-            <th>TP2</th>
-          </tr>
-        </thead>
-        <tbody>
-          {autoTradeStatus?.recent_executions?.length ? (
-            [...autoTradeStatus.recent_executions].reverse().map((x, idx) => (
-              <tr key={idx}>
-                <td className="tiny">{toIso(x.executed_at)}</td>
-                <td>{x.account}</td>
-                <td>{x.mode}</td>
-                <td className="mono">{x.symbol}</td>
-                <td>{x.direction}</td>
-                <td>{x.strategy || "—"}</td>
-                <td>{x.entry ?? "—"}</td>
-                <td>{x.sl ?? "—"}</td>
-                <td>{x.tp1 ?? "—"}</td>
-                <td>{x.tp2 ?? "—"}</td>
-              </tr>
-            ))
-          ) : (
-            <tr><td colSpan="10" className="emptyRow">No auto executions yet.</td></tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-  </SmartCard>
-);
   const renderHistory = () => (
     <SmartCard title="History & Performance" className="historyCard" right={<span className="tiny">Trades logged: {history.length}</span>}>
       <div className="perfGrid">
@@ -2324,8 +2213,238 @@ export default function Dashboard() {
     </SmartCard>
   );
 
+
+  const refreshAutoTrade = useCallback(async () => {
+    setAutoTradeLoading(true);
+    setAutoTradeError("");
+
+    try {
+      const statusData = await fetchAutoTradeStatus();
+      setAutoTradeStatus(statusData);
+    } catch (e) {
+      setAutoTradeError(e?.message || "Auto trader refresh failed");
+    } finally {
+      setAutoTradeLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshAutoTrade();
+
+    const id = setInterval(() => {
+      if (!document.hidden) refreshAutoTrade();
+    }, 10000);
+
+    return () => clearInterval(id);
+  }, [refreshAutoTrade]);
+
+  const saveAutoTradeSetting = useCallback(async (patch) => {
+    setAutoTradeLoading(true);
+    setAutoTradeError("");
+
+    try {
+      const updated = await updateAutoTradeSettings(patch);
+      setAutoTradeStatus(updated);
+    } catch (e) {
+      setAutoTradeError(e?.message || "Auto trader update failed");
+    } finally {
+      setAutoTradeLoading(false);
+    }
+  }, []);
+
+  const renderAutoTrader = () => {
+    const s = autoTradeStatus || {};
+    const totalRisk = Number(s.total_planned_risk ?? ((Number(s.risk_per_split || 0)) * (Number(s.split_trades || 0))));
+
+    return (
+      <SmartCard
+        title="Auto Trader Control Room"
+        className="sentimentCard"
+        right={
+          <span className={`pill ${s.enabled ? "pillWin" : "pillLoss"}`}>
+            {s.enabled ? "AUTO ON" : "AUTO OFF"}
+          </span>
+        }
+      >
+        {autoTradeError ? <div className="errorBox">Error: {autoTradeError}</div> : null}
+
+        <div className="perfGrid">
+          <StatBox label="Account Mode" value={s.account_label || "Practice"} />
+          <StatBox label="Auto Trade" value={s.enabled ? "ON" : "OFF"} tone={s.enabled ? "pillWin" : "pillLoss"} />
+          <StatBox label="Emergency Stop" value={s.emergency_stop ? "ACTIVE" : "OFF"} tone={s.emergency_stop ? "pillLoss" : "pillWin"} />
+          <StatBox label="Screenshot Mode" value={s.screenshot_mode ? "ON" : "OFF"} />
+          <StatBox label="Risk / Split" value={money(s.risk_per_split || 0)} />
+          <StatBox label="Split Trades" value={s.split_trades ?? 2} />
+          <StatBox label="Total Planned Risk" value={money(totalRisk)} tone="fire" />
+          <StatBox label="Min Confidence" value={`${s.min_confidence ?? 74}%`} />
+          <StatBox label="Min R:R" value={s.min_rr ?? 2} />
+          <StatBox label="Daily Max Loss" value={money(s.daily_max_loss || 0)} tone="pillLoss" />
+          <StatBox label="Daily Target" value={money(s.daily_profit_target || 0)} tone="pillWin" />
+          <StatBox label="Loss Streak" value={s.loss_streak ?? 0} />
+          <StatBox label="Cooldown" value={s.cooldown_active ? "ACTIVE" : "OFF"} tone={s.cooldown_active ? "pillLoss" : "pillWin"} />
+        </div>
+
+        <div className="controls" style={{ marginTop: 14 }}>
+          <button
+            className="btn primary"
+            disabled={autoTradeLoading || s.emergency_stop}
+            onClick={() => saveAutoTradeSetting({ enabled: !s.enabled })}
+          >
+            {s.enabled ? "Turn Auto OFF" : "Turn Auto ON"}
+          </button>
+
+          <button
+            className="btn"
+            disabled={autoTradeLoading}
+            onClick={() => saveAutoTradeSetting({ account: s.account === "real" ? "demo" : "real" })}
+          >
+            Switch Account
+          </button>
+
+          <button
+            className="btn"
+            disabled={autoTradeLoading}
+            onClick={() => saveAutoTradeSetting({ screenshot_mode: !s.screenshot_mode })}
+          >
+            Screenshot Mode {s.screenshot_mode ? "OFF" : "ON"}
+          </button>
+
+          <button
+            className="btn danger"
+            disabled={autoTradeLoading}
+            onClick={() => saveAutoTradeSetting({ emergency_stop: true, enabled: false })}
+          >
+            Emergency Stop
+          </button>
+
+          <button
+            className="btn"
+            disabled={autoTradeLoading}
+            onClick={() => saveAutoTradeSetting({ emergency_stop: false })}
+          >
+            Reset Stop
+          </button>
+
+          <button className="btn" disabled={autoTradeLoading} onClick={refreshAutoTrade}>
+            Refresh
+          </button>
+        </div>
+
+        <div className="togglesRow" style={{ alignItems: "flex-end", marginTop: 14 }}>
+          <div className="miniField">
+            <span className="miniLabel">Risk per split $</span>
+            <input
+              className="miniInput"
+              value={s.risk_per_split ?? 1}
+              onChange={(e) => saveAutoTradeSetting({ risk_per_split: Number(e.target.value || 0) })}
+              inputMode="decimal"
+            />
+          </div>
+
+          <div className="miniField">
+            <span className="miniLabel">Splits</span>
+            <input
+              className="miniInput"
+              value={s.split_trades ?? 2}
+              onChange={(e) => saveAutoTradeSetting({ split_trades: Number(e.target.value || 1) })}
+              inputMode="numeric"
+            />
+          </div>
+
+          <div className="miniField">
+            <span className="miniLabel">Min Conf</span>
+            <input
+              className="miniInput"
+              value={s.min_confidence ?? 74}
+              onChange={(e) => saveAutoTradeSetting({ min_confidence: Number(e.target.value || 0) })}
+              inputMode="numeric"
+            />
+          </div>
+
+          <div className="miniField">
+            <span className="miniLabel">Min R:R</span>
+            <input
+              className="miniInput"
+              value={s.min_rr ?? 2}
+              onChange={(e) => saveAutoTradeSetting({ min_rr: Number(e.target.value || 0) })}
+              inputMode="decimal"
+            />
+          </div>
+        </div>
+
+        <div className="reason" style={{ marginTop: 14 }}>
+          <span className="smallText">
+            Split logic: Leg A targets TP1. Leg B targets TP2 and moves SL to breakeven after TP1. Current execution is still paper-only until real Deriv order placement is connected.
+          </span>
+        </div>
+
+        <SmartCard title="Why No Trade?" className="riskCard">
+          <div className="tableWrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Reason</th>
+                  <th>Symbol</th>
+                  <th>Action</th>
+                  <th>Conf</th>
+                </tr>
+              </thead>
+              <tbody>
+                {s.recent_rejections?.length ? [...s.recent_rejections].reverse().map((x, idx) => (
+                  <tr key={idx}>
+                    <td className="tiny">{toIso(x.time)}</td>
+                    <td>{x.reason}</td>
+                    <td className="mono">{x.symbol || "—"}</td>
+                    <td>{x.trade_action || "—"}</td>
+                    <td>{x.confidence ?? "—"}</td>
+                  </tr>
+                )) : (
+                  <tr><td colSpan="5" className="emptyRow">No rejected auto-trade decisions yet.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </SmartCard>
+
+        <SmartCard title="Recent Auto Plans" className="historyCard">
+          <div className="tableWrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Account</th>
+                  <th>Symbol</th>
+                  <th>Direction</th>
+                  <th>Total Risk</th>
+                  <th>R:R</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {s.recent_executions?.length ? [...s.recent_executions].reverse().map((x, idx) => (
+                  <tr key={idx}>
+                    <td className="tiny">{toIso(x.executed_at)}</td>
+                    <td>{s.screenshot_mode ? (x.account === "real" ? "Primary" : "Practice") : x.account}</td>
+                    <td className="mono">{x.plan?.symbol || "—"}</td>
+                    <td>{x.plan?.direction || "—"}</td>
+                    <td>{money(x.plan?.total_risk || 0)}</td>
+                    <td>{x.plan?.rr ? Number(x.plan.rr).toFixed(2) : "—"}</td>
+                    <td>{x.paper_only ? "Paper Plan" : "Executed"}</td>
+                  </tr>
+                )) : (
+                  <tr><td colSpan="7" className="emptyRow">No auto-trade plans yet.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </SmartCard>
+      </SmartCard>
+    );
+  };
+
+
   const renderTab = () => {
-    if (activeTab === "Auto Trader") return renderAutoTrader();
     if (activeTab === "Overview") return renderOverview();
     if (activeTab === "Signal") return renderSignal();
     if (activeTab === "Lot Calculator") return renderLotCalculator();
@@ -2335,6 +2454,7 @@ export default function Dashboard() {
     if (activeTab === "Scanner") return renderScanner();
     if (activeTab === "Chart") return renderChart();
     if (activeTab === "History") return renderHistory();
+    if (activeTab === "Auto Trader") return renderAutoTrader();
     if (activeTab === "Health") return renderHealth();
     return renderOverview();
   };
