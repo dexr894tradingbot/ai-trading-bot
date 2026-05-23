@@ -1454,7 +1454,7 @@ export default function Dashboard() {
       setStatus("ANALYZING");
 
       try {
-        const data = await withTimeout(analyzeMarket(symbol, tf), 15000, "Analyze");
+        const data = await withTimeout(analyzeMarket(symbol, tf), 60000, "Analyze");
         if (requestId !== analyzeRequestRef.current) return null;
 
         const norm = normalizeAnalyzeResponse(data);
@@ -1477,7 +1477,7 @@ export default function Dashboard() {
 
   const syncGlobalState = useCallback(async () => {
     try {
-      const data = await withTimeout(fetchGlobalState(200), 12000, "Global state");
+      const data = await withTimeout(fetchGlobalState(200), 30000, "Global state");
 
       const activeTrades = Array.isArray(data?.active_trades) ? data.active_trades : [];
       const backendHistory = Array.isArray(data?.history) ? data.history : [];
@@ -1581,7 +1581,7 @@ export default function Dashboard() {
     setStatus("SCANNING");
 
     try {
-      const data = await withTimeout(scanMarkets(symbolsList, timeframe), 15000, "Scan");
+      const data = await withTimeout(scanMarkets(symbolsList, timeframe), 60000, "Scan");
       const newRanked = Array.isArray(data?.ranked) ? data.ranked : Array.isArray(data) ? data : [];
 
       newRanked.sort((a, b) => {
