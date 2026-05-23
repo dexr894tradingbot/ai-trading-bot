@@ -38,7 +38,6 @@ const TABS = [
   "Daily Stats",
   "Weekly Stats",
   "Scanner",
-  "Chart",
   "History",
   "Auto Trader",
   "Health",
