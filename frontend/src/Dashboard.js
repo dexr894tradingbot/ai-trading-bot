@@ -6,7 +6,6 @@ import {
   fetchGlobalState,
   fetchAutoTradeStatus,
   updateAutoTradeSettings,
-  fetchAutoTradeAccount,
   getBackendWebSocketUrl,
   getBackendUrl,
 } from "./api";
