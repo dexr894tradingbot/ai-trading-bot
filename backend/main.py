@@ -1,4 +1,5 @@
 from __future__ import annotations
+from routes.auto_trader import router as auto_trader_router
 
 import os
 import asyncio
@@ -91,3 +92,4 @@ app.add_middleware(
 )
 
 app.include_router(analyze_router, prefix="/analyze_market")
+app.include_router(auto_trader_router, prefix="/analyze_market/auto-trade")

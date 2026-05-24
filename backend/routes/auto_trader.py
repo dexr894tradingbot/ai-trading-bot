@@ -52,3 +52,16 @@ async def auto_trade_health():
         "ok": True,
         "system": "smart_auto_trader",
     }
+
+@router.get("/account")
+async def get_account(account: str = "demo"):
+    return {
+        "success": True,
+        "account": account,
+        "balance": 10000 if account == "demo" else 2500,
+        "currency": "USD",
+        "equity": 10000 if account == "demo" else 2500,
+        "profit": 0,
+        "connected": True
+    }
+
