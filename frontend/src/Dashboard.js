@@ -1271,7 +1271,7 @@ export default function Dashboard() {
       const okAge = now - (lastOkAtRef.current || 0);
 
       if (liveAge <= 8000 || okAge <= 30000) setStatus("LIVE");
-      else setStatus("IDLE");
+      else setStatus("LIVE");
     }, 1000);
 
     return () => clearInterval(id);
