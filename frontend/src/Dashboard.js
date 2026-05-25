@@ -1457,7 +1457,7 @@ export default function Dashboard() {
       setStatus("ANALYZING");
 
       try {
-        const data = await withTimeout(analyzeMarket(symbol, tf), 15000, "Analyze");
+        const data = await withTimeout(analyzeMarket(symbol, tf), 60000, "Analyze");
         if (requestId !== analyzeRequestRef.current) return null;
 
         const norm = normalizeAnalyzeResponse(data);
@@ -1575,7 +1575,7 @@ export default function Dashboard() {
     setStatus("SCANNING");
 
     try {
-      const data = await withTimeout(scanMarkets(symbolsList, timeframe), 15000, "Scan");
+      const data = await withTimeout(scanMarkets(symbolsList, timeframe), 60000, "Scan");
       const newRanked = Array.isArray(data?.ranked) ? data.ranked : Array.isArray(data) ? data : [];
 
       newRanked.sort((a, b) => {
