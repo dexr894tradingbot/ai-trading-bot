@@ -898,55 +898,26 @@ def _daily_strategy_performance() -> Dict[str, Any]:
 
 
 def build_daily_strategy_report_message() -> str:
-    day = _today_key()
-    closed = [
-        t for t in TRADE_HISTORY
-        if t.get("status") == "CLOSED" and t.get("day_key") == day
-    ]
-
+    perf = _daily_strategy_performance()
     lines = [
-        "📊 DEXTRADEZ DAILY PERFORMANCE REPORT",
-        f"Day: {day}",
-        f"Closed Trades: {len(closed)}",
+        f"📊 DEXTRADEZ DAILY STRATEGY REPORT",
+        f"Day: {perf['day']}",
+        f"Closed Trades: {perf['total_closed']}",
         "",
     ]
 
-    if not closed:
+    if not perf["strategies"]:
         lines.append("No closed trades yet today.")
         return "\n".join(lines)
 
-    by_symbol: Dict[str, Dict[str, Any]] = {}
-
-    for t in closed:
-        symbol = t.get("symbol", "UNKNOWN")
-        outcome = t.get("outcome")
-
-        if symbol not in by_symbol:
-            by_symbol[symbol] = {"wins": 0, "losses": 0, "be": 0, "total": 0}
-
-        by_symbol[symbol]["total"] += 1
-
-        if outcome in ("TP2", "TP1_ONLY"):
-            by_symbol[symbol]["wins"] += 1
-        elif outcome == "SL":
-            by_symbol[symbol]["losses"] += 1
-        elif outcome == "BE":
-            by_symbol[symbol]["be"] += 1
-
-    lines.append("📌 BY MARKET")
-    for symbol, row in sorted(by_symbol.items()):
-        lines.append(
-            f"{symbol}: {row['wins']} wins, {row['losses']} loss, {row['be']} BE"
-        )
-
-    lines.append("")
-    lines.append("📌 BY STRATEGY")
-
-    perf = _daily_strategy_performance()
     for row in perf["strategies"]:
-        lines.append(
-            f"{row['strategy']}: {row['wins']} wins, {row['losses']} loss, {row['breakevens']} BE | WR {row['win_rate']}%"
-        )
+        lines.extend([
+            f"📌 {row['strategy']}",
+            f"Trades: {row['total']} | Wins: {row['wins']} | Losses: {row['losses']} | BE: {row['breakevens']}",
+            f"TP2: {row['tp2']} | TP1 Only: {row['tp1_only']}",
+            f"Win Rate: {row['win_rate']}% | R Total: {row['r_total']}",
+            "",
+        ])
 
     return "\n".join(lines)
 
@@ -3514,8 +3485,7 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
     breakout_setup = detect_breakout_retest(entry_data, context)
     mss_setup = detect_mss_bos_reversal(entry_data, context)
 
-    # CORE ONLY MODE: keep new strategies in file, but only core can send live signals.
-    candidate_setups = [core_setup]
+    candidate_setups = [core_setup, sweep_setup, breakout_setup, mss_setup]
     valid_setups = [x for x in candidate_setups if x.get("direction") in ("BUY", "SELL")]
 
     if valid_setups:
@@ -3601,19 +3571,6 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
 
     if manage_trade and signal.get("direction") in ("BUY", "SELL"):
         opened = await open_new_trade(symbol, timeframe, signal)
-
-        auto_execution = None
-        try:
-            from utils.auto_trader import get_public_status, execute_auto_trade
-            auto_status = get_public_status()
-            if bool(auto_status.get("enabled")):
-                auto_execution = await execute_auto_trade(symbol, timeframe, opened)
-                opened["auto_execution"] = auto_execution
-                print(f"auto_trade_execution: {symbol} {timeframe} -> {auto_execution.get('ok')} | {auto_execution.get('note')}")
-        except Exception as e:
-            auto_execution = {"ok": False, "error": str(e)}
-            opened["auto_execution"] = auto_execution
-            print(f"auto_trade_execution_error: {symbol} {timeframe}: {e}")
 
         return {
             "symbol": symbol,

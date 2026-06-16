@@ -1,0 +1,80 @@
+import os
+import requests
+from typing import Dict, Any, Optional
+
+
+DERIV_BASE = "https://api.derivws.com"
+
+
+def load_deriv_env() -> None:
+    for path in ["backend/.env", ".env"]:
+        try:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        k, v = line.split("=", 1)
+                        os.environ[k] = v
+        except FileNotFoundError:
+            pass
+
+
+def deriv_headers() -> Dict[str, str]:
+    load_deriv_env()
+
+    token = os.getenv("DERIV_PAT_TOKEN")
+    app_id = os.getenv("DERIV_APP_ID")
+
+    if not token or not app_id:
+        raise RuntimeError("Missing DERIV_PAT_TOKEN or DERIV_APP_ID")
+
+    return {
+        "Authorization": f"Bearer {token}",
+        "Deriv-App-ID": app_id,
+        "Content-Type": "application/json",
+    }
+
+
+def fetch_deriv_accounts() -> Dict[str, Any]:
+    r = requests.get(
+        f"{DERIV_BASE}/trading/v1/options/accounts",
+        headers=deriv_headers(),
+        timeout=15,
+    )
+
+    if r.status_code != 200:
+        return {
+            "success": False,
+            "status_code": r.status_code,
+            "error": r.text[:500],
+        }
+
+    return {
+        "success": True,
+        "data": r.json().get("data", []),
+    }
+
+
+def get_deriv_account(account: str = "demo") -> Dict[str, Any]:
+    account = "real" if account == "real" else "demo"
+    accounts = fetch_deriv_accounts()
+
+    if not accounts.get("success"):
+        return accounts
+
+    for a in accounts.get("data", []):
+        if a.get("account_type") == account:
+            return {
+                "success": True,
+                "account": account,
+                "account_id": a.get("account_id"),
+                "account_type": a.get("account_type"),
+                "balance": float(a.get("balance") or 0),
+                "currency": a.get("currency", "USD"),
+                "status": a.get("status"),
+            }
+
+    return {
+        "success": False,
+        "error": f"No {account} account found",
+    }

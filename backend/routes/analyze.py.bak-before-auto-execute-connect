@@ -3602,19 +3602,6 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
     if manage_trade and signal.get("direction") in ("BUY", "SELL"):
         opened = await open_new_trade(symbol, timeframe, signal)
 
-        auto_execution = None
-        try:
-            from utils.auto_trader import get_public_status, execute_auto_trade
-            auto_status = get_public_status()
-            if bool(auto_status.get("enabled")):
-                auto_execution = await execute_auto_trade(symbol, timeframe, opened)
-                opened["auto_execution"] = auto_execution
-                print(f"auto_trade_execution: {symbol} {timeframe} -> {auto_execution.get('ok')} | {auto_execution.get('note')}")
-        except Exception as e:
-            auto_execution = {"ok": False, "error": str(e)}
-            opened["auto_execution"] = auto_execution
-            print(f"auto_trade_execution_error: {symbol} {timeframe}: {e}")
-
         return {
             "symbol": symbol,
             "timeframe": timeframe,

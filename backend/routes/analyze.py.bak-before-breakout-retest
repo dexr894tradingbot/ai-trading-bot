@@ -843,113 +843,6 @@ def _weekly_performance() -> Dict[str, Any]:
         "losses": losses,
     }
 
-def _daily_strategy_performance() -> Dict[str, Any]:
-    day = _today_key()
-    closed = [
-        t for t in TRADE_HISTORY
-        if t.get("status") == "CLOSED" and t.get("day_key") == day
-    ]
-
-    rows: Dict[str, Dict[str, Any]] = {}
-
-    for t in closed:
-        strategy = t.get("strategy_name") or t.get("meta", {}).get("strategy_name") or "UNKNOWN"
-        if strategy not in rows:
-            rows[strategy] = {
-                "strategy": strategy,
-                "total": 0,
-                "wins": 0,
-                "losses": 0,
-                "breakevens": 0,
-                "tp2": 0,
-                "tp1_only": 0,
-                "r_total": 0.0,
-            }
-
-        row = rows[strategy]
-        outcome = t.get("outcome")
-        row["total"] += 1
-
-        if outcome == "TP2":
-            row["wins"] += 1
-            row["tp2"] += 1
-            row["r_total"] += float(t.get("r_multiple") or 0)
-        elif outcome == "TP1_ONLY":
-            row["wins"] += 1
-            row["tp1_only"] += 1
-            row["r_total"] += float(t.get("tp1_r_multiple") or 0)
-        elif outcome == "SL":
-            row["losses"] += 1
-            row["r_total"] -= 1.0
-        elif outcome == "BE":
-            row["breakevens"] += 1
-
-    result = list(rows.values())
-    for row in result:
-        total = row["total"]
-        row["win_rate"] = round((row["wins"] / total) * 100, 1) if total else 0.0
-        row["r_total"] = round(row["r_total"], 2)
-
-    return {
-        "day": day,
-        "total_closed": len(closed),
-        "strategies": sorted(result, key=lambda x: x["r_total"], reverse=True),
-    }
-
-
-def build_daily_strategy_report_message() -> str:
-    day = _today_key()
-    closed = [
-        t for t in TRADE_HISTORY
-        if t.get("status") == "CLOSED" and t.get("day_key") == day
-    ]
-
-    lines = [
-        "📊 DEXTRADEZ DAILY PERFORMANCE REPORT",
-        f"Day: {day}",
-        f"Closed Trades: {len(closed)}",
-        "",
-    ]
-
-    if not closed:
-        lines.append("No closed trades yet today.")
-        return "\n".join(lines)
-
-    by_symbol: Dict[str, Dict[str, Any]] = {}
-
-    for t in closed:
-        symbol = t.get("symbol", "UNKNOWN")
-        outcome = t.get("outcome")
-
-        if symbol not in by_symbol:
-            by_symbol[symbol] = {"wins": 0, "losses": 0, "be": 0, "total": 0}
-
-        by_symbol[symbol]["total"] += 1
-
-        if outcome in ("TP2", "TP1_ONLY"):
-            by_symbol[symbol]["wins"] += 1
-        elif outcome == "SL":
-            by_symbol[symbol]["losses"] += 1
-        elif outcome == "BE":
-            by_symbol[symbol]["be"] += 1
-
-    lines.append("📌 BY MARKET")
-    for symbol, row in sorted(by_symbol.items()):
-        lines.append(
-            f"{symbol}: {row['wins']} wins, {row['losses']} loss, {row['be']} BE"
-        )
-
-    lines.append("")
-    lines.append("📌 BY STRATEGY")
-
-    perf = _daily_strategy_performance()
-    for row in perf["strategies"]:
-        lines.append(
-            f"{row['strategy']}: {row['wins']} wins, {row['losses']} loss, {row['breakevens']} BE | WR {row['win_rate']}%"
-        )
-
-    return "\n".join(lines)
-
 
 # =========================================================
 # INDICATORS
@@ -2314,7 +2207,6 @@ def detect_liquidity_sweep_reversal(entry_data: List[Dict[str, float]], context:
     structure = context["structure_raw"]
     zones = context["zones"]
     pools = context["pools"]
-    combined_bias = context.get("bias", "NEUTRAL")
 
     last = entry_data[-1]
     prev = entry_data[-2]
@@ -2327,11 +2219,8 @@ def detect_liquidity_sweep_reversal(entry_data: List[Dict[str, float]], context:
     swing_high = safe_float(structure.get("last_swing_high"), None)
     swing_low = safe_float(structure.get("last_swing_low"), None)
 
-    # Bias filter: do not let reversal strategy fight the main higher-timeframe direction.
-    # This prevents BUY signals during DOWN bias and SELL signals during UP bias.
-
     # SELL: price sweeps previous high, then closes back below it with bearish rejection.
-    if combined_bias == "DOWN" and swing_high and last_high > swing_high + atr_value * 0.05 and last_close < swing_high:
+    if swing_high and last_high > swing_high + atr_value * 0.05 and last_close < swing_high:
         if last_close < last_open or bearish_engulfing(prev, last):
             direction = "SELL"
             entry = last_close
@@ -2366,7 +2255,7 @@ def detect_liquidity_sweep_reversal(entry_data: List[Dict[str, float]], context:
             }
 
     # BUY: price sweeps previous low, then closes back above it with bullish rejection.
-    if combined_bias == "UP" and swing_low and last_low < swing_low - atr_value * 0.05 and last_close > swing_low:
+    if swing_low and last_low < swing_low - atr_value * 0.05 and last_close > swing_low:
         if last_close > last_open or bullish_engulfing(prev, last):
             direction = "BUY"
             entry = last_close
@@ -2402,240 +2291,6 @@ def detect_liquidity_sweep_reversal(entry_data: List[Dict[str, float]], context:
 
     return {"direction": "HOLD", "reason": "ls_no_sweep_reversal"}
 
-
-
-def detect_breakout_retest(entry_data: List[Dict[str, float]], context: Dict[str, Any]) -> Dict[str, Any]:
-    if len(entry_data) < 30:
-        return {"direction": "HOLD", "reason": "br_not_enough_candles"}
-
-    atr_value = float(context.get("atr_value") or 0.0)
-    if atr_value <= 0:
-        return {"direction": "HOLD", "reason": "br_no_atr"}
-
-    combined_bias = context.get("bias", "NEUTRAL")
-    zones = context["zones"]
-    pools = context["pools"]
-    trend_info = context["trend_entry"]
-
-    if combined_bias not in ("UP", "DOWN"):
-        return {"direction": "HOLD", "reason": "br_neutral_bias"}
-
-    trend_strength = float(trend_info.get("trend_strength") or 0.0)
-    if trend_strength < MIN_TREND_STRENGTH:
-        return {"direction": "HOLD", "reason": "br_trend_strength_too_low"}
-
-    last = entry_data[-1]
-    prev = entry_data[-2]
-    recent = entry_data[-10:]
-
-    last_close = safe_float(last["close"], 0.0)
-    last_low = safe_float(last["low"], 0.0)
-    last_high = safe_float(last["high"], 0.0)
-
-    # BUY breakout retest: price broke resistance, retested it as support, then closed bullish.
-    if combined_bias == "UP":
-        candidates = []
-        for z in zones.get("resistances", []):
-            level = safe_float(z.get("level"), None)
-            if not level:
-                continue
-
-            broke_above = any(safe_float(c["close"], 0.0) > level + atr_value * 0.08 for c in recent[:-1])
-            retested = last_low <= level + atr_value * 0.15 and last_close > level
-            confirmed = candle_closes_strong_bullish(last) or bullish_engulfing(prev, last)
-
-            if broke_above and retested and confirmed:
-                candidates.append(level)
-
-        if candidates:
-            level = max(candidates)
-            entry = last_close
-            sl = min(last_low, level - atr_value * 0.25) - atr_value * SL_BUFFER_ATR
-            risk = entry - sl
-
-            if risk <= 0:
-                return {"direction": "HOLD", "reason": "br_invalid_buy_risk"}
-
-            targets = select_targets("BUY", entry, zones, pools, risk * MIN_RR)
-            tp2 = targets.get("tp2")
-            if tp2 is None:
-                return {"direction": "HOLD", "reason": "br_no_buy_target"}
-
-            rr = (tp2 - entry) / max(1e-9, risk)
-            if rr < MIN_RR:
-                return {"direction": "HOLD", "reason": "br_buy_rr_too_low"}
-
-            return {
-                "direction": "BUY",
-                "entry": entry,
-                "sl": sl,
-                "tp2": tp2,
-                "tp1_hint": targets.get("tp1"),
-                "reason": "breakout_retest_buy",
-                "strategy_name": "BREAKOUT_RETEST",
-                "zone": context.get("watch_buy_zone") or context.get("best_buy_zone"),
-                "breakout_confirm": True,
-                "entry_instruction": "BUY after resistance breakout retest holds as support with bullish confirmation.",
-                "entry_timing": "BREAKOUT_RETEST_CONFIRMATION",
-                "rr_preview": rr,
-            }
-
-    # SELL breakout retest: price broke support, retested it as resistance, then closed bearish.
-    if combined_bias == "DOWN":
-        candidates = []
-        for z in zones.get("supports", []):
-            level = safe_float(z.get("level"), None)
-            if not level:
-                continue
-
-            broke_below = any(safe_float(c["close"], 0.0) < level - atr_value * 0.08 for c in recent[:-1])
-            retested = last_high >= level - atr_value * 0.15 and last_close < level
-            confirmed = candle_closes_strong_bearish(last) or bearish_engulfing(prev, last)
-
-            if broke_below and retested and confirmed:
-                candidates.append(level)
-
-        if candidates:
-            level = min(candidates)
-            entry = last_close
-            sl = max(last_high, level + atr_value * 0.25) + atr_value * SL_BUFFER_ATR
-            risk = sl - entry
-
-            if risk <= 0:
-                return {"direction": "HOLD", "reason": "br_invalid_sell_risk"}
-
-            targets = select_targets("SELL", entry, zones, pools, risk * MIN_RR)
-            tp2 = targets.get("tp2")
-            if tp2 is None:
-                return {"direction": "HOLD", "reason": "br_no_sell_target"}
-
-            rr = (entry - tp2) / max(1e-9, risk)
-            if rr < MIN_RR:
-                return {"direction": "HOLD", "reason": "br_sell_rr_too_low"}
-
-            return {
-                "direction": "SELL",
-                "entry": entry,
-                "sl": sl,
-                "tp2": tp2,
-                "tp1_hint": targets.get("tp1"),
-                "reason": "breakout_retest_sell",
-                "strategy_name": "BREAKOUT_RETEST",
-                "zone": context.get("watch_sell_zone") or context.get("best_sell_zone"),
-                "breakout_confirm": True,
-                "entry_instruction": "SELL after support breakout retest holds as resistance with bearish confirmation.",
-                "entry_timing": "BREAKOUT_RETEST_CONFIRMATION",
-                "rr_preview": rr,
-            }
-
-    return {"direction": "HOLD", "reason": "br_no_breakout_retest"}
-
-
-def detect_mss_bos_reversal(entry_data: List[Dict[str, float]], context: Dict[str, Any]) -> Dict[str, Any]:
-    if len(entry_data) < 30:
-        return {"direction": "HOLD", "reason": "mss_not_enough_candles"}
-
-    atr_value = float(context.get("atr_value") or 0.0)
-    if atr_value <= 0:
-        return {"direction": "HOLD", "reason": "mss_no_atr"}
-
-    structure = context["structure_raw"]
-    zones = context["zones"]
-    pools = context["pools"]
-
-    last = entry_data[-1]
-    prev = entry_data[-2]
-
-    last_close = safe_float(last["close"], 0.0)
-    last_high = safe_float(last["high"], 0.0)
-    last_low = safe_float(last["low"], 0.0)
-
-    swing_high = safe_float(structure.get("last_swing_high"), None)
-    swing_low = safe_float(structure.get("last_swing_low"), None)
-    bos_up = bool(structure.get("bos_up"))
-    bos_down = bool(structure.get("bos_down"))
-
-    # BUY MSS/BOS: market breaks above structure after taking/sweeping a recent low.
-    if swing_high and swing_low and bos_up:
-        swept_low_recently = any(
-            safe_float(c["low"], 0.0) < swing_low - atr_value * 0.04
-            for c in entry_data[-8:-1]
-        )
-        bullish_confirm = candle_closes_strong_bullish(last) or bullish_engulfing(prev, last)
-
-        if swept_low_recently and bullish_confirm and last_close > swing_high:
-            entry = last_close
-            sl = min(last_low, swing_low) - atr_value * SL_BUFFER_ATR
-            risk = entry - sl
-
-            if risk <= 0:
-                return {"direction": "HOLD", "reason": "mss_invalid_buy_risk"}
-
-            targets = select_targets("BUY", entry, zones, pools, risk * MIN_RR)
-            tp2 = targets.get("tp2")
-            if tp2 is None:
-                return {"direction": "HOLD", "reason": "mss_no_buy_target"}
-
-            rr = (tp2 - entry) / max(1e-9, risk)
-            if rr < MIN_RR:
-                return {"direction": "HOLD", "reason": "mss_buy_rr_too_low"}
-
-            return {
-                "direction": "BUY",
-                "entry": entry,
-                "sl": sl,
-                "tp2": tp2,
-                "tp1_hint": targets.get("tp1"),
-                "reason": "mss_bos_reversal_buy",
-                "strategy_name": "MSS_BOS_REVERSAL",
-                "zone": context.get("watch_buy_zone") or context.get("best_buy_zone"),
-                "breakout_confirm": True,
-                "entry_instruction": "BUY after liquidity sweep below swing low followed by bullish market structure shift / BOS.",
-                "entry_timing": "MSS_BOS_CONFIRMATION",
-                "rr_preview": rr,
-            }
-
-    # SELL MSS/BOS: market breaks below structure after taking/sweeping a recent high.
-    if swing_high and swing_low and bos_down:
-        swept_high_recently = any(
-            safe_float(c["high"], 0.0) > swing_high + atr_value * 0.04
-            for c in entry_data[-8:-1]
-        )
-        bearish_confirm = candle_closes_strong_bearish(last) or bearish_engulfing(prev, last)
-
-        if swept_high_recently and bearish_confirm and last_close < swing_low:
-            entry = last_close
-            sl = max(last_high, swing_high) + atr_value * SL_BUFFER_ATR
-            risk = sl - entry
-
-            if risk <= 0:
-                return {"direction": "HOLD", "reason": "mss_invalid_sell_risk"}
-
-            targets = select_targets("SELL", entry, zones, pools, risk * MIN_RR)
-            tp2 = targets.get("tp2")
-            if tp2 is None:
-                return {"direction": "HOLD", "reason": "mss_no_sell_target"}
-
-            rr = (entry - tp2) / max(1e-9, risk)
-            if rr < MIN_RR:
-                return {"direction": "HOLD", "reason": "mss_sell_rr_too_low"}
-
-            return {
-                "direction": "SELL",
-                "entry": entry,
-                "sl": sl,
-                "tp2": tp2,
-                "tp1_hint": targets.get("tp1"),
-                "reason": "mss_bos_reversal_sell",
-                "strategy_name": "MSS_BOS_REVERSAL",
-                "zone": context.get("watch_sell_zone") or context.get("best_sell_zone"),
-                "breakout_confirm": True,
-                "entry_instruction": "SELL after liquidity sweep above swing high followed by bearish market structure shift / BOS.",
-                "entry_timing": "MSS_BOS_CONFIRMATION",
-                "rr_preview": rr,
-            }
-
-    return {"direction": "HOLD", "reason": "mss_no_structure_shift"}
 
 def detect_trade_setup(entry_data: List[Dict[str, float]], context: Dict[str, Any]) -> Dict[str, Any]:
     if len(entry_data) < 30:
@@ -3511,11 +3166,8 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
     # Run strategies separately, then choose the best valid setup.
     core_setup = detect_trade_setup(entry_data, context)
     sweep_setup = detect_liquidity_sweep_reversal(entry_data, context)
-    breakout_setup = detect_breakout_retest(entry_data, context)
-    mss_setup = detect_mss_bos_reversal(entry_data, context)
 
-    # CORE ONLY MODE: keep new strategies in file, but only core can send live signals.
-    candidate_setups = [core_setup]
+    candidate_setups = [core_setup, sweep_setup]
     valid_setups = [x for x in candidate_setups if x.get("direction") in ("BUY", "SELL")]
 
     if valid_setups:
@@ -3523,10 +3175,6 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
             rr = float(x.get("rr_preview") or 0.0)
             strategy = x.get("strategy_name", "CORE_STRATEGY")
             bonus = 4 if strategy == "LIQUIDITY_SWEEP_REVERSAL" else 0
-            if strategy == "BREAKOUT_RETEST":
-                bonus = 3
-            if strategy == "MSS_BOS_REVERSAL":
-                bonus = 5
             return (rr * 10) + bonus
 
         setup = sorted(valid_setups, key=setup_score, reverse=True)[0]
@@ -3601,19 +3249,6 @@ async def analyze_market(req: AnalyzeRequest, manage_trade: bool = True, emit_te
 
     if manage_trade and signal.get("direction") in ("BUY", "SELL"):
         opened = await open_new_trade(symbol, timeframe, signal)
-
-        auto_execution = None
-        try:
-            from utils.auto_trader import get_public_status, execute_auto_trade
-            auto_status = get_public_status()
-            if bool(auto_status.get("enabled")):
-                auto_execution = await execute_auto_trade(symbol, timeframe, opened)
-                opened["auto_execution"] = auto_execution
-                print(f"auto_trade_execution: {symbol} {timeframe} -> {auto_execution.get('ok')} | {auto_execution.get('note')}")
-        except Exception as e:
-            auto_execution = {"ok": False, "error": str(e)}
-            opened["auto_execution"] = auto_execution
-            print(f"auto_trade_execution_error: {symbol} {timeframe}: {e}")
 
         return {
             "symbol": symbol,
@@ -3800,22 +3435,6 @@ async def live_market(symbol: str = "R_10", timeframe: str = ENTRY_TF) -> Dict[s
         "updated_at": _now_ts(),
     }
 
-
-
-@router.get("/daily-report")
-async def daily_report() -> Dict[str, Any]:
-    return _daily_strategy_performance()
-
-
-@router.post("/daily-report/send")
-async def send_daily_report() -> Dict[str, Any]:
-    text = build_daily_strategy_report_message()
-    ok = await maybe_send_telegram(
-        key=f"daily_report:{_today_key()}",
-        min_gap_sec=60,
-        text=text,
-    )
-    return {"ok": ok, "message": text}
 
 @router.get("/history")
 async def history(symbol: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
