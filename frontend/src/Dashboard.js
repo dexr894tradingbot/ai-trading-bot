@@ -2271,6 +2271,12 @@ export default function Dashboard() {
     const startingBalance = s.account === "real" ? 0 : 10000;
     const todayPL = liveBalance ? liveBalance - startingBalance : 0;
     const openStatus = s.enabled ? "SCANNING" : "STANDBY";
+    const globalActive = activeTrade ? [activeTrade] : [];
+    const activeCount = Number(activeTotal ?? globalActive.length ?? 0);
+    const maxSignals = Number(s.max_open_trades ?? maxActiveTotal ?? 2);
+    const tradesToday = Number(executions.length || 0);
+    const maxTradesDay = Number(s.max_trades_per_day ?? 6);
+    const nextTradeSize = Number(s.risk_per_split || 0) * Number(s.split_trades || 0);
 
     return (
       <SmartCard
@@ -2289,6 +2295,9 @@ export default function Dashboard() {
           <StatBox label="Live Balance" value={money(liveBalance)} tone="fire" />
           <StatBox label="Today's P/L" value={`${todayPL >= 0 ? "+" : ""}${money(todayPL)}`} tone={todayPL >= 0 ? "pillWin" : "pillLoss"} />
           <StatBox label="Bot Status" value={openStatus} tone={s.enabled ? "pillWin" : "pillLoss"} />
+          <StatBox label="Open Signals" value={`${activeCount} / ${maxSignals}`} tone={activeCount >= maxSignals ? "pillLoss" : "pillWin"} />
+          <StatBox label="Trades Today" value={`${tradesToday} / ${maxTradesDay}`} tone={tradesToday >= maxTradesDay ? "pillLoss" : "pillWin"} />
+          <StatBox label="Next Trade Size" value={money(nextTradeSize)} tone="fire" />
 
           <StatBox label="Auto Trade" value={s.enabled ? "ON" : "OFF"} tone={s.enabled ? "pillWin" : "pillLoss"} />
           <StatBox label="Execution" value={lastExec ? (lastExec.ok ? "LIVE ORDER" : "FAILED") : "WAITING"} tone={lastExec?.ok ? "pillWin" : "pillLoss"} />
@@ -2464,6 +2473,39 @@ export default function Dashboard() {
             Live Deriv execution is connected. When Auto Trade is ON, valid BUY/SELL signals can place Deriv contracts on the selected account. Keep Practice mode on while testing.
           </span>
         </div>
+
+        <SmartCard title="Active Auto Trades" className="historyCard">
+          <div className="tableWrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Direction</th>
+                  <th>Entry</th>
+                  <th>SL</th>
+                  <th>TP1</th>
+                  <th>TP2</th>
+                  <th>Progress</th>
+                </tr>
+              </thead>
+              <tbody>
+                {globalActive?.length ? globalActive.map((t, idx) => (
+                  <tr key={idx}>
+                    <td className="mono">{t.symbol || "—"}</td>
+                    <td>{t.direction || "—"}</td>
+                    <td>{t.entry ?? "—"}</td>
+                    <td>{t.sl ?? "—"}</td>
+                    <td>{t.tp1 ?? "—"}</td>
+                    <td>{t.tp2 || t.tp || "—"}</td>
+                    <td>{t.progress_pct != null ? `${t.progress_pct}%` : "—"}</td>
+                  </tr>
+                )) : (
+                  <tr><td colSpan="7" className="emptyRow">No active auto trades right now.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </SmartCard>
 
         <SmartCard title="Why No Trade?" className="riskCard">
           <div className="tableWrap">
