@@ -5,6 +5,7 @@ import {
   scanMarkets,
   fetchGlobalState,
   fetchAutoTradeStatus,
+  fetchAutoTradeAccount,
   updateAutoTradeSettings,
   getBackendWebSocketUrl,
   getBackendUrl,
@@ -832,6 +833,7 @@ export default function Dashboard() {
   const [error, setError] = useState("");
 
   const [autoTradeStatus, setAutoTradeStatus] = useState(null);
+  const [autoTradeAccount, setAutoTradeAccount] = useState(null);
   const [autoTradeLoading, setAutoTradeLoading] = useState(false);
   const [autoTradeError, setAutoTradeError] = useState("");
 
@@ -2220,6 +2222,9 @@ export default function Dashboard() {
     try {
       const statusData = await fetchAutoTradeStatus();
       setAutoTradeStatus(statusData);
+
+      const accountData = await fetchAutoTradeAccount(statusData?.account || "demo");
+      setAutoTradeAccount(accountData);
     } catch (e) {
       setAutoTradeError(e?.message || "Auto trader refresh failed");
     } finally {
@@ -2244,6 +2249,9 @@ export default function Dashboard() {
     try {
       const updated = await updateAutoTradeSettings(patch);
       setAutoTradeStatus(updated);
+
+      const accountData = await fetchAutoTradeAccount(updated?.account || "demo");
+      setAutoTradeAccount(accountData);
     } catch (e) {
       setAutoTradeError(e?.message || "Auto trader update failed");
     } finally {
@@ -2254,6 +2262,15 @@ export default function Dashboard() {
   const renderAutoTrader = () => {
     const s = autoTradeStatus || {};
     const totalRisk = Number(s.total_planned_risk ?? ((Number(s.risk_per_split || 0)) * (Number(s.split_trades || 0))));
+    const acct = autoTradeAccount || {};
+    const executions = s.recent_executions || [];
+    const lastExec = executions.length ? executions[executions.length - 1] : null;
+    const lastExecution = lastExec?.execution || {};
+    const lastBuy = lastExecution?.buy || {};
+    const liveBalance = Number(acct.balance ?? lastExecution.balance_after ?? 0);
+    const startingBalance = s.account === "real" ? 0 : 10000;
+    const todayPL = liveBalance ? liveBalance - startingBalance : 0;
+    const openStatus = s.enabled ? "SCANNING" : "STANDBY";
 
     return (
       <SmartCard
@@ -2269,14 +2286,25 @@ export default function Dashboard() {
 
         <div className="perfGrid">
           <StatBox label="Account Mode" value={s.account_label || "Practice"} />
+          <StatBox label="Live Balance" value={money(liveBalance)} tone="fire" />
+          <StatBox label="Today's P/L" value={`${todayPL >= 0 ? "+" : ""}${money(todayPL)}`} tone={todayPL >= 0 ? "pillWin" : "pillLoss"} />
+          <StatBox label="Bot Status" value={openStatus} tone={s.enabled ? "pillWin" : "pillLoss"} />
+
           <StatBox label="Auto Trade" value={s.enabled ? "ON" : "OFF"} tone={s.enabled ? "pillWin" : "pillLoss"} />
-          <StatBox label="Emergency Stop" value={s.emergency_stop ? "ACTIVE" : "OFF"} tone={s.emergency_stop ? "pillLoss" : "pillWin"} />
-          <StatBox label="Screenshot Mode" value={s.screenshot_mode ? "ON" : "OFF"} />
+          <StatBox label="Execution" value={lastExec ? (lastExec.ok ? "LIVE ORDER" : "FAILED") : "WAITING"} tone={lastExec?.ok ? "pillWin" : "pillLoss"} />
+          <StatBox label="Last Symbol" value={lastExec?.plan?.symbol || "—"} />
+          <StatBox label="Last Direction" value={lastExec?.plan?.direction || "—"} />
+
+          <StatBox label="Last Contract" value={lastExecution?.contract_id || "—"} />
+          <StatBox label="Balance After" value={lastExecution?.balance_after ? money(lastExecution.balance_after) : "—"} />
+          <StatBox label="Buy Price" value={lastBuy?.buy_price ? money(lastBuy.buy_price) : "—"} />
+          <StatBox label="Payout" value={lastBuy?.payout ? money(lastBuy.payout) : "—"} />
+
           <StatBox label="Risk / Split" value={money(s.risk_per_split || 0)} />
           <StatBox label="Split Trades" value={s.split_trades ?? 2} />
           <StatBox label="Total Planned Risk" value={money(totalRisk)} tone="fire" />
           <StatBox label="Min Confidence" value={`${s.min_confidence ?? 74}%`} />
-          <StatBox label="Min R:R" value={s.min_rr ?? 2} />
+
           <StatBox label="Daily Max Loss" value={money(s.daily_max_loss || 0)} tone="pillLoss" />
           <StatBox label="Daily Target" value={money(s.daily_profit_target || 0)} tone="pillWin" />
           <StatBox label="Loss Streak" value={s.loss_streak ?? 0} />
@@ -2373,7 +2401,7 @@ export default function Dashboard() {
 
         <div className="reason" style={{ marginTop: 14 }}>
           <span className="smallText">
-            Split logic: Leg A targets TP1. Leg B targets TP2 and moves SL to breakeven after TP1. Current execution is still paper-only until real Deriv order placement is connected.
+            Live Deriv execution is connected. When Auto Trade is ON, valid BUY/SELL signals can place Deriv contracts on the selected account. Keep Practice mode on while testing.
           </span>
         </div>
 
@@ -2418,6 +2446,8 @@ export default function Dashboard() {
                   <th>Total Risk</th>
                   <th>R:R</th>
                   <th>Status</th>
+                  <th>Contract</th>
+                  <th>Balance After</th>
                 </tr>
               </thead>
               <tbody>
@@ -2429,10 +2459,12 @@ export default function Dashboard() {
                     <td>{x.plan?.direction || "—"}</td>
                     <td>{money(x.plan?.total_risk || 0)}</td>
                     <td>{x.plan?.rr ? Number(x.plan.rr).toFixed(2) : "—"}</td>
-                    <td>{x.paper_only ? "Paper Plan" : "Executed"}</td>
+                    <td>{x.ok ? "Executed" : "Failed"}</td>
+                    <td className="mono">{x.execution?.contract_id || "—"}</td>
+                    <td>{x.execution?.balance_after ? money(x.execution.balance_after) : "—"}</td>
                   </tr>
                 )) : (
-                  <tr><td colSpan="7" className="emptyRow">No auto-trade plans yet.</td></tr>
+                  <tr><td colSpan="9" className="emptyRow">No live executions yet. Waiting for a valid BUY/SELL signal.</td></tr>
                 )}
               </tbody>
             </table>
