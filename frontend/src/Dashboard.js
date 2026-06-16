@@ -2397,6 +2397,46 @@ export default function Dashboard() {
               inputMode="decimal"
             />
           </div>
+
+          <div className="miniField">
+            <span className="miniLabel">Daily Max Loss $</span>
+            <input
+              className="miniInput"
+              value={s.daily_max_loss ?? 10}
+              onChange={(e) => saveAutoTradeSetting({ daily_max_loss: Number(e.target.value || 0) })}
+              inputMode="decimal"
+            />
+          </div>
+
+          <div className="miniField">
+            <span className="miniLabel">Daily Target $</span>
+            <input
+              className="miniInput"
+              value={s.daily_profit_target ?? 20}
+              onChange={(e) => saveAutoTradeSetting({ daily_profit_target: Number(e.target.value || 0) })}
+              inputMode="decimal"
+            />
+          </div>
+
+          <div className="miniField">
+            <span className="miniLabel">Cooldown Losses</span>
+            <input
+              className="miniInput"
+              value={s.cooldown_after_losses ?? 3}
+              onChange={(e) => saveAutoTradeSetting({ cooldown_after_losses: Number(e.target.value || 1) })}
+              inputMode="numeric"
+            />
+          </div>
+
+          <div className="miniField">
+            <span className="miniLabel">Cooldown Minutes</span>
+            <input
+              className="miniInput"
+              value={s.cooldown_minutes ?? 120}
+              onChange={(e) => saveAutoTradeSetting({ cooldown_minutes: Number(e.target.value || 0) })}
+              inputMode="numeric"
+            />
+          </div>
         </div>
 
         <div className="reason" style={{ marginTop: 14 }}>
