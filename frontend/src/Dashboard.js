@@ -2237,7 +2237,7 @@ export default function Dashboard() {
 
     const id = setInterval(() => {
       if (!document.hidden) refreshAutoTrade();
-    }, 10000);
+    }, 30000);
 
     return () => clearInterval(id);
   }, [refreshAutoTrade]);
