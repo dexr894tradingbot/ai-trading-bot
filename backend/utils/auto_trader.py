@@ -280,15 +280,30 @@ async def execute_auto_trade(symbol: str, timeframe: str, signal: Dict[str, Any]
 
     plan = build_split_trade_plan(symbol, timeframe, signal)
 
+    from utils.deriv_orders import place_deriv_option_trade
+
+    account = AUTO_TRADE_STATE.get("account", "demo")
+    stake = float(AUTO_TRADE_STATE.get("risk_per_split") or 1.0)
+
+    execution = await place_deriv_option_trade(
+        account=account,
+        symbol=symbol,
+        direction=signal.get("direction"),
+        stake=stake,
+        duration=5,
+        duration_unit="m",
+    )
+
     result = {
-        "ok": True,
-        "paper_only": True,
-        "note": "Smart auto-trader plan created. Real Deriv execution not enabled yet.",
-        "account": AUTO_TRADE_STATE["account"],
+        "ok": bool(execution.get("success")),
+        "paper_only": False,
+        "note": "Real Deriv execution attempted.",
+        "account": account,
         "mode": AUTO_TRADE_STATE["mode"],
         "trade_id": signal.get("public_trade_id") or signal.get("trade_id"),
         "executed_at": _now(),
         "plan": plan,
+        "execution": execution,
     }
 
     trade_id = result.get("trade_id")
