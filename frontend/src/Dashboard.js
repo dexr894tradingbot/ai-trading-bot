@@ -2437,6 +2437,26 @@ export default function Dashboard() {
               inputMode="numeric"
             />
           </div>
+
+          <div className="miniField">
+            <span className="miniLabel">Max Open Signals</span>
+            <input
+              className="miniInput"
+              value={s.max_open_trades ?? 2}
+              onChange={(e) => saveAutoTradeSetting({ max_open_trades: Number(e.target.value || 1) })}
+              inputMode="numeric"
+            />
+          </div>
+
+          <div className="miniField">
+            <span className="miniLabel">Max Trades / Day</span>
+            <input
+              className="miniInput"
+              value={s.max_trades_per_day ?? 6}
+              onChange={(e) => saveAutoTradeSetting({ max_trades_per_day: Number(e.target.value || 1) })}
+              inputMode="numeric"
+            />
+          </div>
         </div>
 
         <div className="reason" style={{ marginTop: 14 }}>
