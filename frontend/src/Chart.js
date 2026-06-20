@@ -30,7 +30,7 @@ export default function Chart({
   candles = [],
   supports = [],
   resistances = [],
-  symbol = "R_10",
+  symbol = "R_75",
   timeframe = "5m",
   entry = null,
   sl = null,

@@ -48,11 +48,11 @@ const LS_KEY_HISTORY = "dex_bot_history_v4";
 const LS_KEY_POINT_VALUES = "dex_bot_point_values_v1";
 
 const DEFAULT_POINT_VALUES = {
-  R_10: 1,
-  R_25: 1,
-  R_50: 1,
+  
+  
+  
   R_75: 1,
-  R_100: 1,
+  
 };
 
 function safeNum(x, fallback = 0) {
@@ -825,7 +825,7 @@ export default function Dashboard() {
     }
   }, []);
 
-  const [selectedSymbol, setSelectedSymbol] = useState(restored?.selectedSymbol || "R_10");
+  const [selectedSymbol, setSelectedSymbol] = useState(restored?.selectedSymbol || "R_75");
   const [timeframe, setTimeframe] = useState(restored?.timeframe || "5m");
   const [activeTab, setActiveTab] = useState(restored?.activeTab || "Overview");
 
