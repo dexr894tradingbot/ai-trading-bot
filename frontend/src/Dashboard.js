@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Chart from "./Chart";
 import {
   analyzeMarket,
   scanMarkets,
