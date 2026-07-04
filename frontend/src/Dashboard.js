@@ -38,7 +38,7 @@ const TABS = [
   "Daily Stats",
   "Weekly Stats",
   "Scanner",
-  "Chart",
+  
   "History",
   "Auto Trader",
   "Health",
@@ -828,7 +828,7 @@ export default function Dashboard() {
 
   const [selectedSymbol, setSelectedSymbol] = useState(restored?.selectedSymbol || "R_75");
   const [timeframe, setTimeframe] = useState(restored?.timeframe || "5m");
-  const [activeTab, setActiveTab] = useState(restored?.activeTab || "Overview");
+  const [activeTab, setActiveTab] = useState(restored?.activeTab === "Chart" ? "Overview" : restored?.activeTab || "Overview");
 
   const [status, setStatus] = useState("IDLE");
   const [error, setError] = useState("");
@@ -2621,7 +2621,6 @@ export default function Dashboard() {
     if (activeTab === "Daily Stats") return renderStats(dailyStats, "Daily Performance");
     if (activeTab === "Weekly Stats") return renderStats(weeklyStats, "Weekly Performance");
     if (activeTab === "Scanner") return renderScanner();
-    if (activeTab === "Chart") return renderChart();
     if (activeTab === "History") return renderHistory();
     if (activeTab === "Auto Trader") return renderAutoTrader();
     if (activeTab === "Health") return renderHealth();
