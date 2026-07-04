@@ -2118,26 +2118,6 @@ export default function Dashboard() {
     </SmartCard>
   );
 
-  const renderChart = () => (
-    <SmartCard title="Live Chart" className="chartCard" right={<span className="tiny">Candles: {candles?.length || 0}</span>}>
-      <div className="chartWrap">
-        <Chart
-          key={`${selectedSymbol}-${timeframe}`}
-          candles={candles}
-          supports={supports}
-          resistances={resistances}
-          symbol={selectedSymbol}
-          timeframe={timeframe}
-          entry={entry}
-          sl={sl}
-          tp={tp}
-          tp1={tp1}
-          tp2={tp2}
-        />
-      </div>
-    </SmartCard>
-  );
-
   const renderHistory = () => (
     <SmartCard title="History & Performance" className="historyCard" right={<span className="tiny">Trades logged: {history.length}</span>}>
       <div className="perfGrid">
