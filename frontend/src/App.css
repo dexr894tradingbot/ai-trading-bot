@@ -1293,3 +1293,14 @@ body::after{
     grid-template-columns: 1fr;
   }
 }
+/* Mobile input fix: prevents iPhone zoom + improves typing */
+input,
+select,
+textarea,
+button {
+  font-size: 16px !important;
+}
+
+input[type="number"] {
+  touch-action: manipulation;
+}
