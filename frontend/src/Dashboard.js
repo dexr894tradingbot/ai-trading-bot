@@ -280,7 +280,7 @@ function normalizeAnalyzeResponse(data) {
     safeNum(data?.max_active_total ?? data?.limits?.max_active_total ?? 5, 5) || 5;
 
   return {
-    // candles removed from localStorage for speed,
+    candles,
     supports,
     resistances,
     direction,
@@ -837,7 +837,7 @@ export default function Dashboard() {
   const [autoTradeLoading, setAutoTradeLoading] = useState(false);
   const [autoTradeError, setAutoTradeError] = useState("");
 
-  const [// candles removed from localStorage for speed, setCandles] = useState([]);
+  const [candles, setCandles] = useState([]);
   const [supports, setSupports] = useState(restored?.supports || []);
   const [resistances, setResistances] = useState(restored?.resistances || []);
 
@@ -1161,7 +1161,7 @@ export default function Dashboard() {
           selectedSymbol,
           timeframe,
           activeTab,
-          // candles removed from localStorage for speed,
+          candles,
           supports,
           resistances,
           direction,
@@ -1228,7 +1228,7 @@ export default function Dashboard() {
     selectedSymbol,
     timeframe,
     activeTab,
-    // candles removed from localStorage for speed,
+    candles,
     supports,
     resistances,
     direction,
