@@ -9,6 +9,7 @@ import {
   updateAutoTradeSettings,
   getBackendWebSocketUrl,
   getBackendUrl,
+  getLatestSignals,
 } from "./api";
 
 const VOLATILITY_OPTIONS = [
@@ -850,6 +851,41 @@ export default function Dashboard() {
   const [tp2, setTp2] = useState(restored?.tp2 ?? null);
   const [reason, setReason] = useState(restored?.reason || "No signal yet.");
   const [price, setPrice] = useState(restored?.price ?? null);
+
+  useEffect(() => {
+    let stopped = false;
+
+    async function loadLatestTelegramSignal() {
+      try {
+        const data = await getLatestSignals(1);
+        const latest = data?.signals?.[0];
+
+        if (!latest || stopped) return;
+
+        setSelectedSymbol(latest.symbol || "R_75");
+        setTimeframe(latest.timeframe || "5m");
+        setDirection(latest.direction || "HOLD");
+        setConfidence(latest.confidence || 0);
+        setEntry(latest.entry ?? null);
+        setSl(latest.sl ?? null);
+        setTp(latest.tp2 ?? null);
+        setTp1(latest.tp1 ?? null);
+        setTp2(latest.tp2 ?? null);
+        setReason(latest.reason || "Latest Telegram signal");
+        setStatus("LIVE SIGNAL");
+      } catch (e) {
+        console.log("latest signals load error", e);
+      }
+    }
+
+    loadLatestTelegramSignal();
+    const timer = setInterval(loadLatestTelegramSignal, 15000);
+
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, []);
 
   const [tradeAction, setTradeAction] = useState(restored?.tradeAction || "NONE");
   const [actionMessage, setActionMessage] = useState(restored?.actionMessage || "");

@@ -126,3 +126,7 @@ export function getBackendWebSocketUrl() {
 
   return `${wsProtocol}//${backendHost}/analyze_market/ws`;
 }
+
+export async function getLatestSignals(limit = 20) {
+  return getJson(`/analyze_market/latest-signals?limit=${limit}`);
+}
