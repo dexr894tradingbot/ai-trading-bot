@@ -2386,8 +2386,8 @@ export default function Dashboard() {
             <span className="miniLabel">Risk per split $</span>
             <input
               className="miniInput"
-              value={s.risk_per_split ?? 1}
-              onChange={(e) => saveAutoTradeSetting({ risk_per_split: Number(e.target.value || 0) })}
+              defaultValue={s.risk_per_split ?? 1}
+              onBlur={(e) => saveAutoTradeSetting({ risk_per_split: Number(e.target.value || 0) })}
               inputMode="decimal"
             />
           </div>
@@ -2396,8 +2396,8 @@ export default function Dashboard() {
             <span className="miniLabel">Splits</span>
             <input
               className="miniInput"
-              value={s.split_trades ?? 2}
-              onChange={(e) => saveAutoTradeSetting({ split_trades: Number(e.target.value || 1) })}
+              defaultValue={s.split_trades ?? 2}
+              onBlur={(e) => saveAutoTradeSetting({ split_trades: Number(e.target.value || 1) })}
               inputMode="numeric"
             />
           </div>
@@ -2406,8 +2406,8 @@ export default function Dashboard() {
             <span className="miniLabel">Min Conf</span>
             <input
               className="miniInput"
-              value={s.min_confidence ?? 74}
-              onChange={(e) => saveAutoTradeSetting({ min_confidence: Number(e.target.value || 0) })}
+              defaultValue={s.min_confidence ?? 74}
+              onBlur={(e) => saveAutoTradeSetting({ min_confidence: Number(e.target.value || 0) })}
               inputMode="numeric"
             />
           </div>
@@ -2416,8 +2416,8 @@ export default function Dashboard() {
             <span className="miniLabel">Min R:R</span>
             <input
               className="miniInput"
-              value={s.min_rr ?? 2}
-              onChange={(e) => saveAutoTradeSetting({ min_rr: Number(e.target.value || 0) })}
+              defaultValue={s.min_rr ?? 2}
+              onBlur={(e) => saveAutoTradeSetting({ min_rr: Number(e.target.value || 0) })}
               inputMode="decimal"
             />
           </div>
@@ -2426,8 +2426,8 @@ export default function Dashboard() {
             <span className="miniLabel">Daily Max Loss $</span>
             <input
               className="miniInput"
-              value={s.daily_max_loss ?? 10}
-              onChange={(e) => saveAutoTradeSetting({ daily_max_loss: Number(e.target.value || 0) })}
+              defaultValue={s.daily_max_loss ?? 10}
+              onBlur={(e) => saveAutoTradeSetting({ daily_max_loss: Number(e.target.value || 0) })}
               inputMode="decimal"
             />
           </div>
@@ -2436,8 +2436,8 @@ export default function Dashboard() {
             <span className="miniLabel">Daily Target $</span>
             <input
               className="miniInput"
-              value={s.daily_profit_target ?? 20}
-              onChange={(e) => saveAutoTradeSetting({ daily_profit_target: Number(e.target.value || 0) })}
+              defaultValue={s.daily_profit_target ?? 20}
+              onBlur={(e) => saveAutoTradeSetting({ daily_profit_target: Number(e.target.value || 0) })}
               inputMode="decimal"
             />
           </div>
@@ -2446,8 +2446,8 @@ export default function Dashboard() {
             <span className="miniLabel">Cooldown Losses</span>
             <input
               className="miniInput"
-              value={s.cooldown_after_losses ?? 3}
-              onChange={(e) => saveAutoTradeSetting({ cooldown_after_losses: Number(e.target.value || 1) })}
+              defaultValue={s.cooldown_after_losses ?? 3}
+              onBlur={(e) => saveAutoTradeSetting({ cooldown_after_losses: Number(e.target.value || 1) })}
               inputMode="numeric"
             />
           </div>
@@ -2456,8 +2456,8 @@ export default function Dashboard() {
             <span className="miniLabel">Cooldown Minutes</span>
             <input
               className="miniInput"
-              value={s.cooldown_minutes ?? 120}
-              onChange={(e) => saveAutoTradeSetting({ cooldown_minutes: Number(e.target.value || 0) })}
+              defaultValue={s.cooldown_minutes ?? 120}
+              onBlur={(e) => saveAutoTradeSetting({ cooldown_minutes: Number(e.target.value || 0) })}
               inputMode="numeric"
             />
           </div>
@@ -2466,8 +2466,8 @@ export default function Dashboard() {
             <span className="miniLabel">Max Open Signals</span>
             <input
               className="miniInput"
-              value={s.max_open_trades ?? 2}
-              onChange={(e) => saveAutoTradeSetting({ max_open_trades: Number(e.target.value || 1) })}
+              defaultValue={s.max_open_trades ?? 2}
+              onBlur={(e) => saveAutoTradeSetting({ max_open_trades: Number(e.target.value || 1) })}
               inputMode="numeric"
             />
           </div>
@@ -2476,8 +2476,8 @@ export default function Dashboard() {
             <span className="miniLabel">Max Trades / Day</span>
             <input
               className="miniInput"
-              value={s.max_trades_per_day ?? 6}
-              onChange={(e) => saveAutoTradeSetting({ max_trades_per_day: Number(e.target.value || 1) })}
+              defaultValue={s.max_trades_per_day ?? 6}
+              onBlur={(e) => saveAutoTradeSetting({ max_trades_per_day: Number(e.target.value || 1) })}
               inputMode="numeric"
             />
           </div>
